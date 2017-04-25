@@ -82,7 +82,7 @@ class GenericArray {
 
   // corresponds to "bar = null;" in Java
   void reset() {
-    data_.reset();
+    if (_data != nullptr) data_.reset();
     length_ = -1;
   };
 
