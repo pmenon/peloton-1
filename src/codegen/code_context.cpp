@@ -23,8 +23,8 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #endif
 
+#include "codegen/debug_ir.h"
 #include "common/exception.h"
-#include "common/logger.h"
 
 namespace peloton {
 namespace codegen {
@@ -208,6 +208,14 @@ bool CodeContext::Compile() {
     pass_manager_->run(*func_iter.first);
   }
   pass_manager_->doFinalization();
+
+#ifndef NDEBUG
+  {
+    // If we're in debug mode, run the DebugIR pass
+    llvm::DebugIR debug_ir{false, false, "", ""};
+    debug_ir.runOnModule(GetModule());
+  }
+#endif
 
   // Functions and module have been optimized, now JIT compile the module
   engine_->finalizeObject();
