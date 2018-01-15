@@ -22,6 +22,7 @@
 #include "common/statement_cache_manager.h"
 #include "concurrency/transaction_manager_factory.h"
 #include "gc/gc_manager_factory.h"
+#include "index/index.h"
 #include "settings/settings_manager.h"
 #include "threadpool/mono_queue_pool.h"
 
