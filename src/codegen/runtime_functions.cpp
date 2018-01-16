@@ -14,18 +14,23 @@
 
 #include <nmmintrin.h>
 
+#include "murmur3/MurmurHash3.h"
+
 #include "common/exception.h"
-#include "common/logger.h"
 #include "expression/abstract_expression.h"
 #include "expression/expression_util.h"
 #include "storage/data_table.h"
 #include "storage/tile_group.h"
 #include "storage/tile.h"
 #include "storage/zone_map_manager.h"
-#include "type/value_factory.h"
 
 namespace peloton {
 namespace codegen {
+
+uint64_t RuntimeFunctions::HashMurmur3(const char *buf, uint64_t length,
+                                       uint64_t seed) {
+  return static_cast<uint64_t>(MurmurHash3_x64_128(buf, length, seed));
+}
 
 #define CRC32(op, crc, type, buf, len)                   \
   do {                                                   \
@@ -62,13 +67,25 @@ uint64_t RuntimeFunctions::HashCrc64(const char *buf, uint64_t length,
 //===----------------------------------------------------------------------===//
 // Get the tile group with the given index from the table.
 //
-// TODO: DataTable::GetTileGroup() returns a std::shared_ptr<> that we strip
-//       off. This means we could be touching free'd data. This must be fixed.
+// TODO(pmenon) : DataTable::GetTileGroup() returns a std::shared_ptr<> that we
+//               strip off. This means we could be touching free'd data. Fix me.
 //===----------------------------------------------------------------------===//
 storage::TileGroup *RuntimeFunctions::GetTileGroup(storage::DataTable *table,
                                                    uint64_t tile_group_index) {
   auto tile_group = table->GetTileGroup(tile_group_index);
   return tile_group.get();
+}
+
+//===----------------------------------------------------------------------===//
+// Get the index with the given OID from the given table.
+//
+// TODO(pmenon): DataTable::GetIndexByOid() returns a std::shared_ptr<>. We
+//               strip off, making this access unsafe. Fix me.
+//===----------------------------------------------------------------------===//
+index::Index *RuntimeFunctions::GetIndexByOid(storage::DataTable *table,
+                                              oid_t index_oid) {
+  auto index = table->GetIndexWithOid(index_oid);
+  return index.get();
 }
 
 //===----------------------------------------------------------------------===//
@@ -127,6 +144,10 @@ void RuntimeFunctions::ThrowDivideByZeroException() {
 
 void RuntimeFunctions::ThrowOverflowException() {
   throw std::overflow_error("ERROR: overflow");
+}
+
+void RuntimeFunctions::ThrowIndexKeyTooLargeException() {
+  throw IndexException{"ERROR: index key is too large"};
 }
 
 }  // namespace codegen

@@ -17,6 +17,10 @@
 
 namespace peloton {
 
+namespace index {
+class Index;
+}  // namespace index
+
 namespace storage {
 class DataTable;
 class TileGroup;
@@ -27,7 +31,7 @@ struct PredicateInfo;
 
 namespace expression {
 class AbstractExpression;
-}  // namespace storage
+}  // namespace expression
 
 namespace codegen {
 //===----------------------------------------------------------------------===//
@@ -46,6 +50,10 @@ class RuntimeFunctions {
   // the version in DataTable because we need to strip off the shared_ptr
   static storage::TileGroup *GetTileGroup(storage::DataTable *table,
                                           uint64_t tile_group_index);
+
+  // Get the index with the given OID from the provided table
+  static index::Index *GetIndexByOid(storage::DataTable *table,
+                                     oid_t index_oid);
 
   static void FillPredicateArray(const expression::AbstractExpression *expr,
                                  storage::PredicateInfo *predicate_array);
@@ -71,6 +79,8 @@ class RuntimeFunctions {
   static void ThrowDivideByZeroException();
 
   static void ThrowOverflowException();
+
+  static void ThrowIndexKeyTooLargeException();
 };
 
 }  // namespace codegen
