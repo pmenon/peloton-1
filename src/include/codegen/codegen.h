@@ -101,6 +101,11 @@ class CodeGen {
   //===--------------------------------------------------------------------===//
   llvm::Value *CallPrintf(const std::string &format,
                           const std::vector<llvm::Value *> &args);
+  llvm::Value *CallMalloc(llvm::Value *sz);
+  void CallFree(llvm::Value *sz);
+  void CallMemset(llvm::Value *ptr, llvm::Value *fill, llvm::Value *sz,
+                  uint32_t alignment);
+
   llvm::Value *Sqrt(llvm::Value *val);
 
   //===--------------------------------------------------------------------===//

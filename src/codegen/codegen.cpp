@@ -147,6 +147,31 @@ llvm::Value *CodeGen::CallPrintf(const std::string &format,
   return CallFunc(printf_fn, printf_args);
 }
 
+llvm::Value *CodeGen::CallMalloc(llvm::Value *sz) {
+  auto *malloc_fn = LookupBuiltin("malloc");
+  if (malloc_fn == nullptr) {
+    malloc_fn = RegisterBuiltin(
+        "malloc", llvm::TypeBuilder<void *(size_t), false>::get(GetContext()),
+        reinterpret_cast<void *>(malloc));
+  }
+  return CallFunc(malloc_fn, {sz});
+}
+
+void CodeGen::CallFree(llvm::Value *sz) {
+  auto *free_fn = LookupBuiltin("free");
+  if (free_fn == nullptr) {
+    free_fn = RegisterBuiltin(
+        "free", llvm::TypeBuilder<void(void *), false>::get(GetContext()),
+        reinterpret_cast<void *>(free));
+  }
+  CallFunc(free_fn, {sz});
+}
+
+void CodeGen::CallMemset(llvm::Value *ptr, llvm::Value *fill, llvm::Value *sz,
+                         uint32_t alignment) {
+  GetBuilder().CreateMemSet(ptr, fill, sz, alignment);
+}
+
 llvm::Value *CodeGen::Sqrt(llvm::Value *val) {
   llvm::Function *sqrt_func = llvm::Intrinsic::getDeclaration(
       &GetModule(), llvm::Intrinsic::sqrt, val->getType());
