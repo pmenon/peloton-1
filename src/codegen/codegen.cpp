@@ -172,6 +172,21 @@ void CodeGen::CallMemset(llvm::Value *ptr, llvm::Value *fill, llvm::Value *sz,
   GetBuilder().CreateMemSet(ptr, fill, sz, alignment);
 }
 
+llvm::Value *CodeGen::Htobe(llvm::Value *val) {
+  // If the layout is big-endian, we're done
+  auto &dl = GetCodeContext().GetDataLayout();
+  if (dl.isBigEndian()) {
+    return val;
+  }
+
+  // Need to byte-swap. Look up LLVM's 'bswap' intrinsic for the given type.
+
+  auto *bswap_func = llvm::Intrinsic::getDeclaration(
+      &GetModule(), llvm::Intrinsic::bswap, {val->getType()});
+  PL_ASSERT(bswap_func != nullptr);
+  return CallFunc(bswap_func, {val});
+}
+
 llvm::Value *CodeGen::Sqrt(llvm::Value *val) {
   llvm::Function *sqrt_func = llvm::Intrinsic::getDeclaration(
       &GetModule(), llvm::Intrinsic::sqrt, val->getType());
