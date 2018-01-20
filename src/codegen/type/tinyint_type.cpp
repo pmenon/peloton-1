@@ -288,7 +288,7 @@ struct Sqrt : public TypeSystem::UnaryOperatorHandleNull {
  protected:
   Value Impl(CodeGen &codegen, const Value &val,
              UNUSED_ATTRIBUTE const TypeSystem::InvocationContext &ctx)
-  const override {
+      const override {
     auto casted = cast.Impl(codegen, val, Decimal::Instance());
     auto *raw_ret = codegen.Sqrt(casted.GetValue());
     return Value{Decimal::Instance(), raw_ret};
@@ -610,6 +610,20 @@ void TinyInt::GetTypeForMaterialization(CodeGen &codegen, llvm::Type *&val_type,
 llvm::Function *TinyInt::GetOutputFunction(
     CodeGen &codegen, UNUSED_ATTRIBUTE const Type &type) const {
   return ValuesRuntimeProxy::OutputTinyInt.GetFunction(codegen);
+}
+
+llvm::Value *TinyInt::WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                            llvm::Value *buf) const {
+  // Flip the sign of the value
+  auto *uval = codegen->CreateXor(val.GetValue(), codegen.Const8(1ul << 7));
+  auto *final =
+      codegen->CreateSelect(val.IsNull(codegen), codegen.Const8(0), uval);
+
+  // Store the value
+  auto *ptr = codegen->CreatePointerCast(buf, final->getType()->getPointerTo());
+  codegen->CreateStore(final, ptr);
+  return codegen->CreateConstInBoundsGEP1_32(codegen.ByteType(), buf,
+                                             sizeof(int8_t));
 }
 
 }  // namespace type

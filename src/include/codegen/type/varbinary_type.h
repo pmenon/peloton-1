@@ -38,6 +38,9 @@ class Varbinary : public SqlType, public Singleton<Varbinary> {
   llvm::Function *GetOutputFunction(CodeGen &codegen,
                                     const Type &type) const override;
 
+  llvm::Value *WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                     llvm::Value *buf) const override;
+
   const TypeSystem &GetTypeSystem() const override { return type_system_; }
 
  private:

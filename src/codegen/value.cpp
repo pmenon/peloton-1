@@ -229,6 +229,12 @@ Value Value::ValueFromMaterialization(const type::Type &type, llvm::Value *val,
                (type.nullable ? null : nullptr)};
 }
 
+llvm::Value *Value::WriteBinaryComparable(CodeGen &codegen,
+                                          llvm::Value *buf) const {
+  const auto &sql_type = type_.GetSqlType();
+  return sql_type.WriteBinaryComparable(codegen, *this, buf);
+}
+
 // Build a new value that combines values arriving from different BB's into a
 // single value.
 Value Value::BuildPHI(

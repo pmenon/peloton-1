@@ -287,7 +287,7 @@ struct Sqrt : public TypeSystem::UnaryOperatorHandleNull {
  protected:
   Value Impl(CodeGen &codegen, const Value &val,
              UNUSED_ATTRIBUTE const TypeSystem::InvocationContext &ctx)
-  const override {
+      const override {
     auto casted = cast.Impl(codegen, val, Decimal::Instance());
     auto *raw_ret = codegen.Sqrt(casted.GetValue());
     return Value{Decimal::Instance(), raw_ret};
@@ -606,6 +606,25 @@ void BigInt::GetTypeForMaterialization(CodeGen &codegen, llvm::Type *&val_type,
 llvm::Function *BigInt::GetOutputFunction(
     CodeGen &codegen, UNUSED_ATTRIBUTE const Type &type) const {
   return ValuesRuntimeProxy::OutputBigInt.GetFunction(codegen);
+}
+
+llvm::Value *BigInt::WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                           llvm::Value *buf) const {
+  // Flip the sign of the value, convert to big-endian and select based on NULL
+  auto *uval = codegen->CreateXor(val.GetValue(), codegen.Const64(1ul << 63));
+  auto *big_endian_val = codegen.Htobe(uval);
+  auto *final = codegen->CreateSelect(val.IsNull(codegen), codegen.Const64(0),
+                                      big_endian_val);
+
+  PL_ASSERT(final->getType() == codegen.Int64Type());
+
+  // Store the value
+  auto *ptr = codegen->CreatePointerCast(buf, final->getType()->getPointerTo());
+  codegen->CreateStore(final, ptr);
+
+  // Compute where the next element should go
+  return codegen->CreateConstInBoundsGEP1_32(codegen.ByteType(), buf,
+                                             sizeof(int64_t));
 }
 
 }  // namespace type

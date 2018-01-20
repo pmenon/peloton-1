@@ -106,6 +106,7 @@ class CodeGen {
   void CallMemset(llvm::Value *ptr, llvm::Value *fill, llvm::Value *sz,
                   uint32_t alignment);
 
+  llvm::Value *Htobe(llvm::Value *val);
   llvm::Value *Sqrt(llvm::Value *val);
 
   //===--------------------------------------------------------------------===//

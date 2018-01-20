@@ -64,6 +64,13 @@ class Invalid : public SqlType, public Singleton<Invalid> {
     throw Exception{"INVALID type does not have an output function"};
   }
 
+  llvm::Value *WriteBinaryComparable(
+      UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
+      UNUSED_ATTRIBUTE llvm::Value *buf) const {
+    // TODO(pmenon): Implement me
+    throw Exception{"INVALID type cannot be written out binary comparable"};
+  }
+
   const TypeSystem &GetTypeSystem() const override {
     throw Exception{"INVALID type doesn't have a type system"};
   }

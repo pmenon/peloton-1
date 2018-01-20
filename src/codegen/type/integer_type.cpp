@@ -251,7 +251,7 @@ struct Floor : public TypeSystem::UnaryOperatorHandleNull {
 // Ceiling
 struct Ceil : public TypeSystem::UnaryOperatorHandleNull {
   CastInteger cast;
-  
+
   bool SupportsType(const Type &type) const override {
     return type.GetSqlType() == Integer::Instance();
   }
@@ -283,7 +283,7 @@ struct Sqrt : public TypeSystem::UnaryOperatorHandleNull {
  protected:
   Value Impl(CodeGen &codegen, const Value &val,
              UNUSED_ATTRIBUTE const TypeSystem::InvocationContext &ctx)
-  const override {
+      const override {
     auto casted = cast.Impl(codegen, val, Decimal::Instance());
     auto *raw_ret = codegen.Sqrt(casted.GetValue());
     return Value{Decimal::Instance(), raw_ret};
@@ -528,8 +528,7 @@ std::vector<TypeSystem::CastInfo> kExplicitCastingTable = {
 
 // Comparison operations
 CompareInteger kCompareInteger;
-std::vector<TypeSystem::ComparisonInfo> kComparisonTable = {
-    {kCompareInteger}};
+std::vector<TypeSystem::ComparisonInfo> kComparisonTable = {{kCompareInteger}};
 
 // Unary operators
 Negate kNegOp;
@@ -606,6 +605,25 @@ void Integer::GetTypeForMaterialization(CodeGen &codegen, llvm::Type *&val_type,
 llvm::Function *Integer::GetOutputFunction(
     CodeGen &codegen, UNUSED_ATTRIBUTE const Type &type) const {
   return ValuesRuntimeProxy::OutputInteger.GetFunction(codegen);
+}
+
+llvm::Value *Integer::WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                            llvm::Value *buf) const {
+  // Flip the sign of the value, convert to big-endian and select based on NULL
+  auto *uval = codegen->CreateXor(val.GetValue(), codegen.Const32(1ul << 31));
+  auto *big_endian_val = codegen.Htobe(uval);
+  auto *final = codegen->CreateSelect(val.IsNull(codegen), codegen.Const32(0),
+                                      big_endian_val);
+
+  PL_ASSERT(final->getType() == codegen.Int32Type());
+
+  // Store the value
+  auto *ptr = codegen->CreatePointerCast(buf, final->getType()->getPointerTo());
+  codegen->CreateStore(final, ptr);
+
+  // Compute where the next element should go
+  return codegen->CreateConstInBoundsGEP1_32(codegen.ByteType(), buf,
+                                             sizeof(int32_t));
 }
 
 }  // namespace type

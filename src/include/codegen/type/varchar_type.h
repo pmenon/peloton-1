@@ -38,6 +38,9 @@ class Varchar : public SqlType, public Singleton<Varchar> {
   llvm::Function *GetOutputFunction(CodeGen &codegen,
                                     const Type &type) const override;
 
+  llvm::Value *WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                     llvm::Value *buf) const override;
+
   const TypeSystem &GetTypeSystem() const override { return type_system_; }
 
  private:

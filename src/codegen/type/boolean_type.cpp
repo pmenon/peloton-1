@@ -334,6 +334,22 @@ llvm::Function *Boolean::GetOutputFunction(
   return ValuesRuntimeProxy::OutputBoolean.GetFunction(codegen);
 }
 
+llvm::Value *Boolean::WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                            llvm::Value *buf) const {
+  auto *final = codegen->CreateSelect(
+      val.IsNull(codegen), GetNullValue(codegen).GetValue(), val.GetValue());
+
+  PL_ASSERT(final->getType() == codegen.ByteType());
+
+  // Store the value
+  auto *ptr = codegen->CreatePointerCast(buf, final->getType()->getPointerTo());
+  codegen->CreateStore(final, ptr);
+
+  // Bump the pointer
+  return codegen->CreateConstInBoundsGEP1_32(codegen.ByteType(), buf,
+                                             sizeof(int8_t));
+}
+
 // This method reifies a NULL-able boolean value, thanks to the weird-ass
 // three-valued logic in SQL. The logic adheres to the table below:
 //

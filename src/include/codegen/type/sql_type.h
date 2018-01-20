@@ -19,6 +19,7 @@
 namespace llvm {
 class Type;
 class Function;
+class Value;
 }  // namespace llvm
 
 namespace peloton {
@@ -60,6 +61,10 @@ class SqlType {
                                          llvm::Type *&len_type) const = 0;
   virtual llvm::Function *GetOutputFunction(CodeGen &codegen,
                                             const Type &type) const = 0;
+
+  virtual llvm::Value *WriteBinaryComparable(CodeGen &codegen, const Value &val,
+                                             llvm::Value *buf) const = 0;
+
   virtual const TypeSystem &GetTypeSystem() const = 0;
 
   // Given a type ID, get the SQL Type instance

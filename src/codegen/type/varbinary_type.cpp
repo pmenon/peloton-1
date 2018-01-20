@@ -193,6 +193,13 @@ llvm::Function *Varbinary::GetOutputFunction(
   return ValuesRuntimeProxy::OutputVarbinary.GetFunction(codegen);
 }
 
+llvm::Value *Varbinary::WriteBinaryComparable(
+    UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
+    UNUSED_ATTRIBUTE llvm::Value *buf) const {
+  // TODO(pmenon): Implement me
+  throw Exception{"Strings aren't binary comparable"};
+}
+
 }  // namespace type
 }  // namespace codegen
 }  // namespace peloton

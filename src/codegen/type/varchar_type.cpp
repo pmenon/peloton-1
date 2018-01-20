@@ -606,6 +606,13 @@ llvm::Function *Varchar::GetOutputFunction(
   return ValuesRuntimeProxy::OutputVarchar.GetFunction(codegen);
 }
 
+llvm::Value *Varchar::WriteBinaryComparable(
+    UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
+    UNUSED_ATTRIBUTE llvm::Value *buf) const {
+  // TODO(pmenon): Implement me
+  throw Exception{"Strings aren't binary comparable"};
+}
+
 }  // namespace type
 }  // namespace codegen
 }  // namespace peloton

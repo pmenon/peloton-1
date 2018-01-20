@@ -572,6 +572,13 @@ llvm::Function *Decimal::GetOutputFunction(
   return ValuesRuntimeProxy::OutputDecimal.GetFunction(codegen);
 }
 
+llvm::Value *Decimal::WriteBinaryComparable(
+    UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
+    UNUSED_ATTRIBUTE llvm::Value *buf) const {
+  // TODO(pmenon): Implement me
+  throw Exception{"Decimals aren't binary comparable yet"};
+}
+
 }  // namespace type
 }  // namespace codegen
 }  // namespace peloton

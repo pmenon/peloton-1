@@ -122,6 +122,8 @@ class Value {
                                         llvm::Value *val, llvm::Value *len,
                                         llvm::Value *null);
 
+  llvm::Value *WriteBinaryComparable(CodeGen &codegen, llvm::Value *buf) const;
+
  private:
   friend class Hash;
   friend class CompactStorage;

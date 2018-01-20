@@ -218,6 +218,26 @@ llvm::Function *Timestamp::GetOutputFunction(
   return ValuesRuntimeProxy::OutputTimestamp.GetFunction(codegen);
 }
 
+llvm::Value *Timestamp::WriteBinaryComparable(CodeGen &codegen,
+                                              const Value &val,
+                                              llvm::Value *buf) const {
+  // Flip the sign of the value, convert to big-endian and select based on NULL
+  auto *uval = codegen->CreateXor(val.GetValue(), codegen.Const64(1ul << 63));
+  auto *big_endian_val = codegen.Htobe(uval);
+  auto *final = codegen->CreateSelect(val.IsNull(codegen), codegen.Const64(0),
+                                      big_endian_val);
+
+  PL_ASSERT(final->getType() == codegen.Int64Type());
+
+  // Store the value
+  auto *ptr = codegen->CreatePointerCast(buf, final->getType()->getPointerTo());
+  codegen->CreateStore(final, ptr);
+
+  // Compute where the next element should go
+  return codegen->CreateConstInBoundsGEP1_32(codegen.ByteType(), buf,
+                                             sizeof(int64_t));
+}
+
 }  // namespace type
 }  // namespace codegen
 }  // namespace peloton

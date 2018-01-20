@@ -96,6 +96,13 @@ llvm::Function *Array::GetOutputFunction(
   throw NotImplementedException{"Array's can't be output ... for now ..."};
 }
 
+llvm::Value *Array::WriteBinaryComparable(
+    UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
+    UNUSED_ATTRIBUTE llvm::Value *buf) const {
+  // TODO(pmenon): Implement me
+  throw Exception{"Writing binary comparable arrays is not implemented yet"};
+}
+
 }  // namespace type
 }  // namespace codegen
 }  // namespace peloton
