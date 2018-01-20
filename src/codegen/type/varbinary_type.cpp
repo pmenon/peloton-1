@@ -163,6 +163,10 @@ Varbinary::Varbinary()
                    kBinaryOperatorTable, kNaryOperatorTable, 
                    kNoArgOperatorTable) {}
 
+uint64_t Varbinary::GetMaxSize(const type::Type &type) const {
+  return type.MaxVarlenSize();
+}
+
 Value Varbinary::GetMinValue(UNUSED_ATTRIBUTE CodeGen &codegen) const {
   throw Exception{"The VARBINARY type does not have a minimum value ..."};
 }

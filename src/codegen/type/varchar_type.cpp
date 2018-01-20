@@ -577,6 +577,10 @@ Varchar::Varchar()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Varchar::GetMaxSize(const type::Type &type) const {
+  return type.MaxVarlenSize();
+}
+
 Value Varchar::GetMinValue(UNUSED_ATTRIBUTE CodeGen &codegen) const {
   throw Exception{"The VARCHAR type does not have a minimum value ..."};
 }

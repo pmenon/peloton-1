@@ -22,6 +22,8 @@ namespace type {
 
 class Boolean : public SqlType, public Singleton<Boolean> {
  public:
+  uint64_t GetMaxSize(const type::Type &type) const override;
+
   bool IsVariableLength() const override { return false; }
 
   Value GetMinValue(CodeGen &codegen) const override;

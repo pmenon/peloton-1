@@ -296,6 +296,10 @@ Boolean::Boolean()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Boolean::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int8_t);
+}
+
 Value Boolean::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.ConstBool(peloton::type::PELOTON_BOOLEAN_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

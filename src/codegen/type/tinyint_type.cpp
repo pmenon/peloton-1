@@ -582,6 +582,10 @@ TinyInt::TinyInt()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t TinyInt::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int8_t);
+}
+
 Value TinyInt::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const8(peloton::type::PELOTON_INT8_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

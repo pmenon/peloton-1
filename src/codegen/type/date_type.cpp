@@ -166,6 +166,10 @@ Date::Date()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Date::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int32_t);
+}
+
 Value Date::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const32(peloton::type::PELOTON_DATE_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

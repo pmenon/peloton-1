@@ -541,6 +541,10 @@ Decimal::Decimal()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Decimal::GetMaxSize(UNUSED_ATTRIBUTE const Type &type) const {
+  return sizeof(double);
+}
+
 Value Decimal::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.ConstDouble(peloton::type::PELOTON_DECIMAL_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

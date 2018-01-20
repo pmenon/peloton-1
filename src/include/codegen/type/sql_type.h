@@ -45,10 +45,12 @@ class TypeSystem;
 class SqlType {
  public:
   SqlType(peloton::type::TypeId type_id) : type_id_(type_id) {}
-  virtual ~SqlType() {}
+
+  virtual ~SqlType() = default;
 
   virtual peloton::type::TypeId TypeId() const { return type_id_; }
 
+  virtual uint64_t GetMaxSize(const type::Type &type) const = 0;
   virtual bool IsVariableLength() const = 0;
   virtual Value GetMinValue(CodeGen &codegen) const = 0;
   virtual Value GetMaxValue(CodeGen &codegen) const = 0;

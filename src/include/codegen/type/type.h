@@ -76,6 +76,10 @@ class Type {
 
   // Get this type, but as non-NULL-able
   Type AsNonNullable() const;
+
+  // Assuming this type represents a variable length object (i.e., a string or
+  // blob), return the maximum possible size it can be.
+  uint32_t MaxVarlenSize() const { return aux_info.varlen; }
 };
 
 }  // namespace type

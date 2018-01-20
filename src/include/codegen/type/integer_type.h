@@ -22,6 +22,8 @@ namespace type {
 
 class Integer : public SqlType, public Singleton<Integer> {
  public:
+  uint64_t GetMaxSize(const type::Type &type) const override;
+
   bool IsVariableLength() const override { return false; }
 
   Value GetMinValue(CodeGen &codegen) const override;

@@ -578,6 +578,10 @@ Integer::Integer()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Integer::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int32_t);
+}
+
 Value Integer::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const32(peloton::type::PELOTON_INT32_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

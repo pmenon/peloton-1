@@ -65,6 +65,10 @@ Array::Array()
                    kBinaryOperatorTable, kNaryOperatorTable,
                    kNoArgOperatorTable) {}
 
+uint64_t Array::GetMaxSize(const Type &type) const {
+  return type.MaxVarlenSize();
+}
+
 Value Array::GetMinValue(UNUSED_ATTRIBUTE CodeGen &codegen) const {
   throw Exception{"Arrays don't have minimum values ...."};
 }

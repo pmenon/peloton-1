@@ -22,6 +22,8 @@ namespace type {
 
 class Varbinary : public SqlType, public Singleton<Varbinary> {
  public:
+  uint64_t GetMaxSize(const type::Type &type) const override;
+
   bool IsVariableLength() const override { return true; }
 
   Value GetMinValue(CodeGen &codegen) const override;

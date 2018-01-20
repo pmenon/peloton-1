@@ -187,6 +187,10 @@ Timestamp::Timestamp()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t Timestamp::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int64_t);
+}
+
 Value Timestamp::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const64(peloton::type::PELOTON_TIMESTAMP_MIN);
   return Value{*this, raw_val, nullptr, nullptr};

@@ -588,6 +588,10 @@ SmallInt::SmallInt()
                    kComparisonTable, kUnaryOperatorTable, kBinaryOperatorTable,
                    kNaryOperatorTable, kNoArgOperatorTable) {}
 
+uint64_t SmallInt::GetMaxSize(UNUSED_ATTRIBUTE const type::Type &type) const {
+  return sizeof(int16_t);
+}
+
 Value SmallInt::GetMinValue(CodeGen &codegen) const {
   auto *raw_val = codegen.Const16(peloton::type::PELOTON_INT16_MIN);
   return Value{*this, raw_val, nullptr, nullptr};
