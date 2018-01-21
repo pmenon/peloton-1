@@ -2,9 +2,9 @@
 //
 //                         Peloton
 //
-// table_scan_translator.h
+// seq_scan_translator.h
 //
-// Identification: src/include/codegen/operator/table_scan_translator.h
+// Identification: src/include/codegen/operator/seq_scan_translator.h
 //
 // Copyright (c) 2015-2017, Carnegie Mellon University Database Group
 //
@@ -33,11 +33,11 @@ namespace codegen {
 //===----------------------------------------------------------------------===//
 // A translator for table scans
 //===----------------------------------------------------------------------===//
-class TableScanTranslator : public OperatorTranslator {
+class SeqScanTranslator : public OperatorTranslator {
  public:
   // Constructor
-  TableScanTranslator(const planner::SeqScanPlan &scan,
-                      CompilationContext &context, Pipeline &pipeline);
+  SeqScanTranslator(const planner::SeqScanPlan &scan,
+                    CompilationContext &context, Pipeline &pipeline);
 
   void InitializeState() override {}
 
@@ -85,8 +85,7 @@ class TableScanTranslator : public OperatorTranslator {
   class ScanConsumer : public codegen::ScanCallback {
    public:
     // Constructor
-    ScanConsumer(const TableScanTranslator &translator,
-                 Vector &selection_vector);
+    ScanConsumer(const SeqScanTranslator &translator, Vector &selection_vector);
 
     // The callback when starting iteration over a new tile group
     void TileGroupStart(CodeGen &, llvm::Value *tile_group_id,
@@ -127,7 +126,7 @@ class TableScanTranslator : public OperatorTranslator {
 
    private:
     // The translator instance the consumer is generating code for
-    const TableScanTranslator &translator_;
+    const SeqScanTranslator &translator_;
 
     // The selection vector used for vectorized scans
     Vector &selection_vector_;

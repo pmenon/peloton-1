@@ -2,15 +2,15 @@
 //
 //                         Peloton
 //
-// table_scan_translator.cpp
+// seq_scan_translator.cpp
 //
-// Identification: src/codegen/operator/table_scan_translator.cpp
+// Identification: src/codegen/operator/seq_scan_translator.cpp
 //
 // Copyright (c) 2015-2017, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
-#include "codegen/operator/table_scan_translator.h"
+#include "codegen/operator/seq_scan_translator.h"
 
 #include "codegen/lang/if.h"
 #include "codegen/proxy/executor_context_proxy.h"
@@ -26,14 +26,15 @@
 namespace peloton {
 namespace codegen {
 
-//===----------------------------------------------------------------------===//
-// TABLE SCAN TRANSLATOR
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// TableScanTranslator
+///
+////////////////////////////////////////////////////////////////////////////////
 
-// Constructor
-TableScanTranslator::TableScanTranslator(const planner::SeqScanPlan &scan,
-                                         CompilationContext &context,
-                                         Pipeline &pipeline)
+SeqScanTranslator::SeqScanTranslator(const planner::SeqScanPlan &scan,
+                                     CompilationContext &context,
+                                     Pipeline &pipeline)
     : OperatorTranslator(context, pipeline),
       scan_(scan),
       table_(*scan_.GetTable()) {
@@ -54,7 +55,7 @@ TableScanTranslator::TableScanTranslator(const planner::SeqScanPlan &scan,
 }
 
 // Produce!
-void TableScanTranslator::Produce() const {
+void SeqScanTranslator::Produce() const {
   auto &codegen = GetCodeGen();
   auto &table = GetTable();
 
@@ -93,7 +94,7 @@ void TableScanTranslator::Produce() const {
 }
 
 // Get the stringified name of this scan
-std::string TableScanTranslator::GetName() const {
+std::string SeqScanTranslator::GetName() const {
   std::string name = "Scan('" + GetTable().GetName() + "'";
   auto *predicate = GetScanPlan().GetPredicate();
   if (predicate != nullptr && predicate->IsSIMDable()) {
@@ -104,7 +105,7 @@ std::string TableScanTranslator::GetName() const {
 }
 
 // Table accessor
-const storage::DataTable &TableScanTranslator::GetTable() const {
+const storage::DataTable &SeqScanTranslator::GetTable() const {
   return *scan_.GetTable();
 }
 
@@ -113,12 +114,12 @@ const storage::DataTable &TableScanTranslator::GetTable() const {
 //===----------------------------------------------------------------------===//
 
 // Constructor
-TableScanTranslator::ScanConsumer::ScanConsumer(
-    const TableScanTranslator &translator, Vector &selection_vector)
+SeqScanTranslator::ScanConsumer::ScanConsumer(
+    const SeqScanTranslator &translator, Vector &selection_vector)
     : translator_(translator), selection_vector_(selection_vector) {}
 
 // Generate the body of the vectorized scan
-void TableScanTranslator::ScanConsumer::ProcessTuples(
+void SeqScanTranslator::ScanConsumer::ProcessTuples(
     CodeGen &codegen, llvm::Value *tid_start, llvm::Value *tid_end,
     TileGroup::TileGroupAccess &tile_group_access) {
   // TODO: Should visibility check be done here or in codegen::Table/TileGroup?
@@ -138,7 +139,7 @@ void TableScanTranslator::ScanConsumer::ProcessTuples(
   RowBatch batch{translator_.GetCompilationContext(), tile_group_id_, tid_start,
                  tid_end, selection_vector_, true};
 
-  std::vector<TableScanTranslator::AttributeAccess> attribute_accesses;
+  std::vector<SeqScanTranslator::AttributeAccess> attribute_accesses;
   SetupRowBatch(batch, tile_group_access, attribute_accesses);
 
   // 4. Push the batch into the pipeline
@@ -147,9 +148,9 @@ void TableScanTranslator::ScanConsumer::ProcessTuples(
   context.Consume(batch);
 }
 
-void TableScanTranslator::ScanConsumer::SetupRowBatch(
+void SeqScanTranslator::ScanConsumer::SetupRowBatch(
     RowBatch &batch, TileGroup::TileGroupAccess &tile_group_access,
-    std::vector<TableScanTranslator::AttributeAccess> &access) const {
+    std::vector<SeqScanTranslator::AttributeAccess> &access) const {
   // Grab a hold of the stuff we need (i.e., the plan, all the attributes, and
   // the IDs of the columns the scan _actually_ produces)
   const auto &scan_plan = translator_.GetScanPlan();
@@ -173,7 +174,7 @@ void TableScanTranslator::ScanConsumer::SetupRowBatch(
   }
 }
 
-void TableScanTranslator::ScanConsumer::FilterRowsByVisibility(
+void SeqScanTranslator::ScanConsumer::FilterRowsByVisibility(
     CodeGen &codegen, llvm::Value *tid_start, llvm::Value *tid_end,
     Vector &selection_vector) const {
   llvm::Value *executor_context_ptr =
@@ -191,11 +192,11 @@ void TableScanTranslator::ScanConsumer::FilterRowsByVisibility(
 
 // Get the predicate, if one exists
 const expression::AbstractExpression *
-TableScanTranslator::ScanConsumer::GetPredicate() const {
+SeqScanTranslator::ScanConsumer::GetPredicate() const {
   return translator_.GetScanPlan().GetPredicate();
 }
 
-void TableScanTranslator::ScanConsumer::FilterRowsByPredicate(
+void SeqScanTranslator::ScanConsumer::FilterRowsByPredicate(
     CodeGen &codegen, const TileGroup::TileGroupAccess &access,
     llvm::Value *tid_start, llvm::Value *tid_end,
     Vector &selection_vector) const {
@@ -239,12 +240,12 @@ void TableScanTranslator::ScanConsumer::FilterRowsByPredicate(
 // ATTRIBUTE ACCESS
 //===----------------------------------------------------------------------===//
 
-TableScanTranslator::AttributeAccess::AttributeAccess(
+SeqScanTranslator::AttributeAccess::AttributeAccess(
     const TileGroup::TileGroupAccess &access, const planner::AttributeInfo *ai)
     : tile_group_access_(access), ai_(ai) {}
 
-codegen::Value TableScanTranslator::AttributeAccess::Access(
-    CodeGen &codegen, RowBatch::Row &row) {
+codegen::Value SeqScanTranslator::AttributeAccess::Access(CodeGen &codegen,
+                                                          RowBatch::Row &row) {
   auto raw_row = tile_group_access_.GetRow(row.GetTID(codegen));
   return raw_row.LoadColumn(codegen, ai_->attribute_id);
 }

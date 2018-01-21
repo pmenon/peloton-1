@@ -2,15 +2,16 @@
 //
 //                         Peloton
 //
-// table_scan_translator_test.cpp
+// seq_scan_translator_test.cpp
 //
-// Identification: test/codegen/table_scan_translator_test.cpp
+// Identification: test/codegen/seq_scan_translator_test.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
-#include "storage/storage_manager.h"
+#include "codegen/testing_codegen_util.h"
+
 #include "catalog/catalog.h"
 #include "codegen/query_compiler.h"
 #include "common/harness.h"
@@ -19,16 +20,14 @@
 #include "expression/operator_expression.h"
 #include "planner/seq_scan_plan.h"
 
-#include "codegen/testing_codegen_util.h"
-
 namespace peloton {
 namespace test {
 
-class TableScanTranslatorTest : public PelotonCodeGenTest {
+class SeqScanTranslatorTest : public PelotonCodeGenTest {
   std::string all_cols_table_name = "crazy_table";
 
  public:
-  TableScanTranslatorTest() : PelotonCodeGenTest(), num_rows_to_insert(64) {
+  SeqScanTranslatorTest() : PelotonCodeGenTest(), num_rows_to_insert(64) {
     // Load test table
     LoadTestTable(TestTableId(), num_rows_to_insert);
 
@@ -98,7 +97,7 @@ class TableScanTranslatorTest : public PelotonCodeGenTest {
   uint32_t num_rows_to_insert = 64;
 };
 
-TEST_F(TableScanTranslatorTest, AllColumnsScan) {
+TEST_F(SeqScanTranslatorTest, AllColumnsScan) {
   //
   // SELECT a, b, c FROM table;
   //
@@ -121,7 +120,7 @@ TEST_F(TableScanTranslatorTest, AllColumnsScan) {
   EXPECT_EQ(NumRowsInTestTable(), results.size());
 }
 
-TEST_F(TableScanTranslatorTest, AllColumnsScanWithNulls) {
+TEST_F(SeqScanTranslatorTest, AllColumnsScanWithNulls) {
   //
   // SELECT * FROM crazy_table;
   //
@@ -156,7 +155,7 @@ TEST_F(TableScanTranslatorTest, AllColumnsScanWithNulls) {
   }
 }
 
-TEST_F(TableScanTranslatorTest, SimplePredicate) {
+TEST_F(SeqScanTranslatorTest, SimplePredicate) {
   //
   // SELECT a, b, c FROM table where a >= 20;
   //
@@ -184,7 +183,7 @@ TEST_F(TableScanTranslatorTest, SimplePredicate) {
   EXPECT_EQ(NumRowsInTestTable() - 2, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, SimplePredicateWithNull) {
+TEST_F(SeqScanTranslatorTest, SimplePredicateWithNull) {
   // Insert 10 null rows
   const bool insert_nulls = true;
   LoadTestTable(TestTableId(), 10, insert_nulls);
@@ -217,18 +216,18 @@ TEST_F(TableScanTranslatorTest, SimplePredicateWithNull) {
 
   // First tuple should be (0, 1)
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(0).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(0)));
+                               type::ValueFactory::GetIntegerValue(0)));
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(1).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(1)));
+                               type::ValueFactory::GetIntegerValue(1)));
 
   // Second tuple should be (10, 11)
   EXPECT_EQ(CmpBool::TRUE, results[1].GetValue(0).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(10)));
+                               type::ValueFactory::GetIntegerValue(10)));
   EXPECT_EQ(CmpBool::TRUE, results[1].GetValue(1).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(11)));
+                               type::ValueFactory::GetIntegerValue(11)));
 }
 
-TEST_F(TableScanTranslatorTest, PredicateOnNonOutputColumn) {
+TEST_F(SeqScanTranslatorTest, PredicateOnNonOutputColumn) {
   //
   // SELECT b FROM table where a >= 40;
   //
@@ -256,7 +255,7 @@ TEST_F(TableScanTranslatorTest, PredicateOnNonOutputColumn) {
   EXPECT_EQ(NumRowsInTestTable() - 4, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithConjunctionPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithConjunctionPredicate) {
   //
   // SELECT a, b, c FROM table where a >= 20 and b = 21;
   //
@@ -292,12 +291,12 @@ TEST_F(TableScanTranslatorTest, ScanWithConjunctionPredicate) {
   const auto &results = buffer.GetOutputTuples();
   ASSERT_EQ(1, results.size());
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(0).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(20)));
+                               type::ValueFactory::GetIntegerValue(20)));
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(1).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(21)));
+                               type::ValueFactory::GetIntegerValue(21)));
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithAddPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithAddPredicate) {
   //
   // SELECT a, b FROM table where b = a + 1;
   //
@@ -337,7 +336,7 @@ TEST_F(TableScanTranslatorTest, ScanWithAddPredicate) {
   EXPECT_EQ(NumRowsInTestTable(), results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithAddColumnsPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithAddColumnsPredicate) {
   //
   // SELECT a, b FROM table where b = a + b;
   //
@@ -378,7 +377,7 @@ TEST_F(TableScanTranslatorTest, ScanWithAddColumnsPredicate) {
   EXPECT_EQ(1, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithSubtractPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithSubtractPredicate) {
   //
   // SELECT a, b FROM table where a = b - 1;
   //
@@ -418,7 +417,7 @@ TEST_F(TableScanTranslatorTest, ScanWithSubtractPredicate) {
   EXPECT_EQ(NumRowsInTestTable(), results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithSubtractColumnsPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithSubtractColumnsPredicate) {
   //
   // SELECT a, b FROM table where b = b - a;
   //
@@ -459,7 +458,7 @@ TEST_F(TableScanTranslatorTest, ScanWithSubtractColumnsPredicate) {
   EXPECT_EQ(1, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithDividePredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithDividePredicate) {
   //
   //   SELECT a, b, c FROM table where a = a / 2;
   //
@@ -500,7 +499,7 @@ TEST_F(TableScanTranslatorTest, ScanWithDividePredicate) {
   EXPECT_EQ(1, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithMultiplyPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithMultiplyPredicate) {
   //
   // SELECT a, b, c FROM table where a = a  *b;
   //
@@ -541,7 +540,7 @@ TEST_F(TableScanTranslatorTest, ScanWithMultiplyPredicate) {
   EXPECT_EQ(1, results.size());
 }
 
-TEST_F(TableScanTranslatorTest, ScanWithModuloPredicate) {
+TEST_F(SeqScanTranslatorTest, ScanWithModuloPredicate) {
   //
   // SELECT a, b, c FROM table where a = b % 1;
   //
@@ -580,9 +579,9 @@ TEST_F(TableScanTranslatorTest, ScanWithModuloPredicate) {
   const auto &results = buffer.GetOutputTuples();
   ASSERT_EQ(1, results.size());
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(0).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(0)));
+                               type::ValueFactory::GetIntegerValue(0)));
   EXPECT_EQ(CmpBool::TRUE, results[0].GetValue(1).CompareEquals(
-                                     type::ValueFactory::GetIntegerValue(1)));
+                               type::ValueFactory::GetIntegerValue(1)));
 }
 
 }  // namespace test

@@ -6,7 +6,7 @@
 //
 // Identification: src/include/codegen/scan_callback.h
 //
-// Copyright (c) 2015-2017, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,7 +29,7 @@ namespace codegen {
 class ScanCallback {
  public:
   // Virtual destructor
-  virtual ~ScanCallback() {}
+  virtual ~ScanCallback() = default;
 
   // Callback for when iteration begins over a new tile group. The second
   // parameter is a pointer to the tile group.

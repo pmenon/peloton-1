@@ -31,7 +31,7 @@
 #include "codegen/operator/insert_translator.h"
 #include "codegen/operator/order_by_translator.h"
 #include "codegen/operator/projection_translator.h"
-#include "codegen/operator/table_scan_translator.h"
+#include "codegen/operator/seq_scan_translator.h"
 #include "codegen/operator/update_translator.h"
 #include "expression/aggregate_expression.h"
 #include "expression/case_expression.h"
@@ -64,7 +64,7 @@ std::unique_ptr<OperatorTranslator> TranslatorFactory::CreateTranslator(
   switch (plan_node.GetPlanNodeType()) {
     case PlanNodeType::SEQSCAN: {
       auto &scan = static_cast<const planner::SeqScanPlan &>(plan_node);
-      translator = new TableScanTranslator(scan, context, pipeline);
+      translator = new SeqScanTranslator(scan, context, pipeline);
       break;
     }
     case PlanNodeType::PROJECTION: {
