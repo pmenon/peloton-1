@@ -33,7 +33,7 @@ InsertTranslator::InsertTranslator(const planner::InsertPlan &insert_plan,
     context.Prepare(*insert_plan.GetChild(0), pipeline);
   }
 
-  // Register the inserter's runtime state to approach it throughout this
+  // Register the codegen::Inserter instance
   inserter_state_id_ = context.GetRuntimeState().RegisterState(
       "inserter", InserterProxy::GetType(GetCodeGen()));
 }
@@ -42,12 +42,12 @@ void InsertTranslator::InitializeState() {
   auto &codegen = GetCodeGen();
   auto &context = GetCompilationContext();
 
-  storage::DataTable *table = insert_plan_.GetTable();
-  llvm::Value *table_ptr =
-      codegen.Call(StorageManagerProxy::GetTableWithOid,
-                   {GetStorageManagerPtr(),
-                    codegen.Const32(table->GetDatabaseOid()),
-                    codegen.Const32(table->GetOid())});
+  const auto &table = *insert_plan_.GetTable();
+  llvm::Value *storage_mgr = GetStorageManagerPtr();
+  llvm::Value *db_oid = codegen.Const32(table.GetDatabaseOid());
+  llvm::Value *table_oid = codegen.Const32(table.GetOid());
+  llvm::Value *table_ptr = codegen.Call(StorageManagerProxy::GetTableWithOid,
+                                        {storage_mgr, db_oid, table_oid});
 
   llvm::Value *executor_ptr = context.GetExecutorContextPtr();
 

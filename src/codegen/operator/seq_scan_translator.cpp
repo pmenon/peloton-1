@@ -28,7 +28,7 @@ namespace codegen {
 
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// TableScanTranslator
+/// SeqScanTranslator
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -62,12 +62,11 @@ void SeqScanTranslator::Produce() const {
   LOG_TRACE("TableScan on [%u] starting to produce tuples ...", table.GetOid());
 
   // Get the table instance from the database
-  llvm::Value *storage_manager_ptr = GetStorageManagerPtr();
+  llvm::Value *storage_mgr = GetStorageManagerPtr();
   llvm::Value *db_oid = codegen.Const32(table.GetDatabaseOid());
   llvm::Value *table_oid = codegen.Const32(table.GetOid());
-  llvm::Value *table_ptr =
-      codegen.Call(StorageManagerProxy::GetTableWithOid,
-                   {storage_manager_ptr, db_oid, table_oid});
+  llvm::Value *table_ptr = codegen.Call(StorageManagerProxy::GetTableWithOid,
+                                        {storage_mgr, db_oid, table_oid});
 
   // The selection vector for the scan
   auto *raw_vec = codegen.AllocateBuffer(
@@ -109,16 +108,16 @@ const storage::DataTable &SeqScanTranslator::GetTable() const {
   return *scan_.GetTable();
 }
 
-//===----------------------------------------------------------------------===//
-// VECTORIZED SCAN CONSUMER
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// ScanConsumer
+///
+////////////////////////////////////////////////////////////////////////////////
 
-// Constructor
 SeqScanTranslator::ScanConsumer::ScanConsumer(
     const SeqScanTranslator &translator, Vector &selection_vector)
     : translator_(translator), selection_vector_(selection_vector) {}
 
-// Generate the body of the vectorized scan
 void SeqScanTranslator::ScanConsumer::ProcessTuples(
     CodeGen &codegen, llvm::Value *tid_start, llvm::Value *tid_end,
     TileGroup::TileGroupAccess &tile_group_access) {
@@ -190,7 +189,6 @@ void SeqScanTranslator::ScanConsumer::FilterRowsByVisibility(
   selection_vector.SetNumElements(out_idx);
 }
 
-// Get the predicate, if one exists
 const expression::AbstractExpression *
 SeqScanTranslator::ScanConsumer::GetPredicate() const {
   return translator_.GetScanPlan().GetPredicate();
@@ -236,9 +234,11 @@ void SeqScanTranslator::ScanConsumer::FilterRowsByPredicate(
   });
 }
 
-//===----------------------------------------------------------------------===//
-// ATTRIBUTE ACCESS
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// AttributeAccess
+///
+////////////////////////////////////////////////////////////////////////////////
 
 SeqScanTranslator::AttributeAccess::AttributeAccess(
     const TileGroup::TileGroupAccess &access, const planner::AttributeInfo *ai)
