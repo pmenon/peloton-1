@@ -61,8 +61,7 @@ inline GeneratedFunction::GeneratedFunction(
 
 inline llvm::Function *GeneratedFunction::Resolve(
     CodeContext &target_cc) const {
-  if (&source_cc_ == &target_cc) {
-    // The context hasn't been compiled yet
+  if (source_cc_ == target_cc) {
     return func_;
   }
   auto *func_impl = source_cc_.GetRawFunctionPointer(func_);
@@ -70,7 +69,7 @@ inline llvm::Function *GeneratedFunction::Resolve(
 
   auto func_declaration = generator_(target_cc);
   auto *func = func_declaration.GetDeclaredFunction();
-  target_cc.RegisterExternalFunction(func, func_, func_impl);
+  target_cc.RegisterExternalFunction(func, func_impl);
   return func;
 }
 

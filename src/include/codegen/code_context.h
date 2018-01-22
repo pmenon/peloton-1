@@ -93,6 +93,8 @@ class CodeContext {
   // ACCESSORS
   //===--------------------------------------------------------------------===//
 
+  bool operator==(const CodeContext &other) const { return id_ == other.id_; }
+
   // Get the identifier for this code
   uint64_t GetID() const { return id_; }
 
