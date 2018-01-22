@@ -33,8 +33,6 @@ HashJoinTranslator::HashJoinTranslator(const planner::HashJoinPlan &join,
                                        CompilationContext &context,
                                        Pipeline &pipeline)
     : OperatorTranslator(context, pipeline), join_(join), left_pipeline_(this) {
-  LOG_DEBUG("Constructing HashJoinTranslator ...");
-
   auto &codegen = GetCodeGen();
   auto &runtime_state = context.GetRuntimeState();
 
@@ -127,7 +125,6 @@ HashJoinTranslator::HashJoinTranslator(const planner::HashJoinPlan &join,
   // Create the hash table
   hash_table_ =
       OAHashTable{codegen, left_key_type, left_value_storage_.MaxStorageSize()};
-  LOG_DEBUG("Finished constructing HashJoinTranslator ...");
 }
 
 // Initialize the hash-table instance

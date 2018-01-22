@@ -32,8 +32,6 @@ OrderByTranslator::OrderByTranslator(const planner::OrderByPlan &plan,
     : OperatorTranslator(context, pipeline),
       plan_(plan),
       child_pipeline_(this) {
-  LOG_DEBUG("Constructing OrderByTranslator ...");
-
   // Prepare the child
   context.Prepare(*plan.GetChild(0), child_pipeline_);
 
@@ -98,8 +96,6 @@ OrderByTranslator::OrderByTranslator(const planner::OrderByPlan &plan,
 
   // Create the sorter
   sorter_ = Sorter{codegen, tuple_desc};
-
-  LOG_DEBUG("Finished constructing OrderByTranslator ...");
 }
 
 // Initialize the sorter instance
@@ -133,7 +129,6 @@ void OrderByTranslator::InitializeState() {
 // or descending order and worry about types etc.
 //===----------------------------------------------------------------------===//
 void OrderByTranslator::DefineAuxiliaryFunctions() {
-  LOG_DEBUG("Constructing 'compare' function for sort ...");
   auto &codegen = GetCodeGen();
   auto &storage_format = sorter_.GetStorageFormat();
 
@@ -212,20 +207,14 @@ void OrderByTranslator::DefineAuxiliaryFunctions() {
 }
 
 void OrderByTranslator::Produce() const {
-  LOG_DEBUG("OrderBy requesting child to produce tuples ...");
-
   // Let the child produce the tuples we materialize into a buffer
   GetCompilationContext().Produce(*plan_.GetChild(0));
-
-  LOG_DEBUG("OrderBy buffered tuples into sorter, going to sort ...");
 
   auto &codegen = GetCodeGen();
   auto *sorter_ptr = LoadStatePtr(sorter_id_);
 
   // The tuples have been materialized into the buffer space, NOW SORT!!!
   sorter_.Sort(codegen, sorter_ptr);
-
-  LOG_DEBUG("OrderBy sort complete, iterating over results ...");
 
   // Now iterate over the sorted list
   auto *raw_vec = codegen.AllocateBuffer(
@@ -236,8 +225,6 @@ void OrderByTranslator::Produce() const {
   ProduceResults callback{*this, selection_vector};
   sorter_.VectorizedIterate(codegen, sorter_ptr, selection_vector.GetCapacity(),
                             callback);
-
-  LOG_DEBUG("OrderBy completed producing tuples ...");
 }
 
 void OrderByTranslator::Consume(ConsumerContext &, RowBatch::Row &row) const {

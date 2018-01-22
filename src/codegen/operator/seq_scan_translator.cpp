@@ -38,12 +38,8 @@ SeqScanTranslator::SeqScanTranslator(const planner::SeqScanPlan &scan,
     : OperatorTranslator(context, pipeline),
       scan_(scan),
       table_(*scan_.GetTable()) {
-  LOG_DEBUG("Constructing TableScanTranslator ...");
-
-  // The restriction, if one exists
   const auto *predicate = GetScanPlan().GetPredicate();
   if (predicate != nullptr) {
-    // If there is a predicate, prepare a translator for it
     context.Prepare(*predicate);
 
     // If the scan's predicate is SIMDable, install a boundary at the output
@@ -51,15 +47,12 @@ SeqScanTranslator::SeqScanTranslator(const planner::SeqScanPlan &scan,
       pipeline.InstallBoundaryAtOutput(this);
     }
   }
-  LOG_DEBUG("Finished constructing TableScanTranslator ...");
 }
 
 // Produce!
 void SeqScanTranslator::Produce() const {
   auto &codegen = GetCodeGen();
   auto &table = GetTable();
-
-  LOG_TRACE("TableScan on [%u] starting to produce tuples ...", table.GetOid());
 
   // Get the table instance from the database
   llvm::Value *storage_mgr = GetStorageManagerPtr();
@@ -81,15 +74,13 @@ void SeqScanTranslator::Produce() const {
   size_t num_preds = 0;
 
   auto *zone_map_manager = storage::ZoneMapManager::GetInstance();
-  if (predicate != nullptr && zone_map_manager->ZoneMapTableExists()) {
-    if (predicate->IsZoneMappable()) {
-      num_preds = predicate->GetNumberofParsedPredicates();
-    }
+  if (predicate != nullptr && predicate->IsZoneMappable() &&
+      zone_map_manager->ZoneMapTableExists()) {
+    num_preds = predicate->GetNumberofParsedPredicates();
   }
   ScanConsumer scan_consumer{*this, sel_vec};
   table_.GenerateScan(codegen, table_ptr, sel_vec.GetCapacity(), scan_consumer,
                       predicate_ptr, num_preds);
-  LOG_TRACE("TableScan on [%u] finished producing tuples ...", table.GetOid());
 }
 
 // Get the stringified name of this scan
@@ -121,12 +112,12 @@ SeqScanTranslator::ScanConsumer::ScanConsumer(
 void SeqScanTranslator::ScanConsumer::ProcessTuples(
     CodeGen &codegen, llvm::Value *tid_start, llvm::Value *tid_end,
     TileGroup::TileGroupAccess &tile_group_access) {
-  // TODO: Should visibility check be done here or in codegen::Table/TileGroup?
-
-  // 1. Filter the rows in the range [tid_start, tid_end) by txn visibility
+  // Filter rows in the provided range by their visibility this transaction.
+  // Store the result in the selection vector.
   FilterRowsByVisibility(codegen, tid_start, tid_end, selection_vector_);
 
-  // 2. Filter rows by the given predicate (if one exists)
+  // Further filter rows by the scan's predicate, if one exists. Store results
+  // in the selection vector.
   auto *predicate = GetPredicate();
   if (predicate != nullptr) {
     // First perform a vectorized filter, putting TIDs into the selection vector
@@ -134,14 +125,15 @@ void SeqScanTranslator::ScanConsumer::ProcessTuples(
                           selection_vector_);
   }
 
-  // 3. Setup the (filtered) row batch and setup attribute accessors
+  // Filtering is complete. Setup the (filtered) row batch with all the
+  // attributes the plan needs.
   RowBatch batch{translator_.GetCompilationContext(), tile_group_id_, tid_start,
                  tid_end, selection_vector_, true};
 
   std::vector<SeqScanTranslator::AttributeAccess> attribute_accesses;
   SetupRowBatch(batch, tile_group_access, attribute_accesses);
 
-  // 4. Push the batch into the pipeline
+  // That's it. Now push the batch through the pipeline.
   ConsumerContext context{translator_.GetCompilationContext(),
                           translator_.GetPipeline()};
   context.Consume(batch);
@@ -203,10 +195,9 @@ void SeqScanTranslator::ScanConsumer::FilterRowsByPredicate(
   RowBatch batch{compilation_ctx, tile_group_id_,   tid_start,
                  tid_end,         selection_vector, true};
 
-  // First, check if the predicate is SIMDable
-  const auto *predicate = GetPredicate();
-  LOG_DEBUG("Is Predicate SIMDable : %d", predicate->IsSIMDable());
   // Determine the attributes the predicate needs
+  const auto *predicate = GetPredicate();
+
   std::unordered_set<const planner::AttributeInfo *> used_attributes;
   predicate->GetUsedAttributes(used_attributes);
 

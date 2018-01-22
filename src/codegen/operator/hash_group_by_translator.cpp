@@ -36,8 +36,6 @@ HashGroupByTranslator::HashGroupByTranslator(
       group_by_(group_by),
       child_pipeline_(this),
       aggregation_(context.GetRuntimeState()) {
-  LOG_DEBUG("Constructing HashGroupByTranslator ...");
-
   auto &codegen = GetCodeGen();
   auto &runtime_state = context.GetRuntimeState();
 
@@ -103,8 +101,6 @@ void HashGroupByTranslator::Produce() const {
 
   // Let the child produce its tuples which we aggregate in our hash-table
   comp_ctx.Produce(*group_by_.GetChild(0));
-
-  LOG_DEBUG("HashGroupBy starting to produce results ...");
 
   auto &codegen = GetCodeGen();
 
@@ -207,8 +203,6 @@ void HashGroupByTranslator::Consume(ConsumerContext &context,
 // Consume the tuples from the context, grouping them into the hash table
 void HashGroupByTranslator::Consume(ConsumerContext &,
                                     RowBatch::Row &row) const {
-  LOG_DEBUG("HashGroupBy consuming results ...");
-
   auto &context = GetCompilationContext();
   auto &codegen = GetCodeGen();
 
