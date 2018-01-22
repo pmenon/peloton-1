@@ -65,13 +65,56 @@ void Table::LoadRow(CodeGen &codegen, llvm::Value *table_ptr,
                     ItemPointerAccess &item_pointer,
                     const std::vector<oid_t> &col_ids,
                     std::vector<codegen::Value> &col_vals) const {
-  // Get the tile group where the row is
+  // Get the tile group this row belongs in
   auto *block = item_pointer.GetBlock(codegen);
   auto *tg_offset = codegen->CreateZExt(block, codegen.Int64Type());
   llvm::Value *tile_group = GetTileGroup(codegen, table_ptr, tg_offset);
 
   // Load the requested columns for the row at the given offset
   tile_group_.LoadRow(codegen, tile_group, item_pointer, col_ids, col_vals);
+}
+
+void Table::GenerateCode(CodeContext &cc) {
+  // Let the index generate all its logic
+  for (const auto &index : indexes_) {
+    index->GenerateCode(cc);
+  }
+
+  // Generate the initialization function
+  GenerateInit(cc);
+}
+
+void Table::GenerateInit(CodeContext &cc) {
+  const auto name =
+      StringUtil::Format("_%lu_%s_init", cc.GetID(), GetName().c_str());
+  const auto init_declaration_fn = [&name, this](CodeContext &context) {
+    CodeGen codegen{context};
+    std::vector<FunctionDeclaration::ArgumentInfo> args = {
+        {"table", GetTableType(codegen)->getPointerTo()}};
+    return FunctionDeclaration::MakeDeclaration(
+        context, name, FunctionDeclaration::Visibility::External,
+        codegen.VoidType(), args);
+  };
+
+  CodeGen codegen{cc};
+  FunctionBuilder init_builder{cc, init_declaration_fn(cc)};
+  {
+    auto *table_ptr = init_builder.GetArgumentByPosition(0);
+    for (const auto &index : indexes_) {
+      index->Init(codegen, table_ptr);
+    }
+  }
+  init_builder.ReturnAndFinish();
+
+  init_func_.reset(new GeneratedFunction(cc, init_builder.GetFunction(),
+                                         init_declaration_fn));
+}
+
+void Table::PrepareForExecution(CodeContext &cc) {
+  // Pull out the generated initialization function and invoke it
+  using InitFn = void(*)(storage::DataTable &);
+  auto init_func = (InitFn)cc.GetRawFunctionPointer(init_func_->Resolve(cc));
+  init_func(table_);
 }
 
 // Generate a scan over all tile groups.

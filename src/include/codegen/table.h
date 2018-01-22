@@ -13,6 +13,7 @@
 #pragma once
 
 #include "codegen/codegen.h"
+#include "codegen/generated_function.h"
 #include "codegen/index/index.h"
 #include "codegen/item_pointer_access.h"
 #include "codegen/scan_callback.h"
@@ -56,6 +57,12 @@ class Table {
                const std::vector<oid_t> &col_ids,
                std::vector<codegen::Value> &col_vals) const;
 
+  /// Generate all table logic code
+  void GenerateCode(CodeContext &cc);
+
+  /// Prepare the table for execution
+  void PrepareForExecution(CodeContext &cc);
+
   /// Generate code to perform a scan over the given table. The table pointer
   /// is provided as the second argument. The scan consumer (third argument)
   /// should be notified when ready to generate the scan loop body.
@@ -64,6 +71,9 @@ class Table {
                     llvm::Value *predicate_array, size_t num_predicates) const;
 
  private:
+  /// Generate initialization logic
+  void GenerateInit(CodeContext &cc);
+
   /// Given a table instance, return the number of tile groups in the table.
   llvm::Value *GetTileGroupCount(CodeGen &codegen,
                                  llvm::Value *table_ptr) const;
@@ -84,6 +94,9 @@ class Table {
 
   // The indexes in the table
   std::vector<std::unique_ptr<Index>> indexes_;
+
+  // The generated initialization function
+  std::unique_ptr<GeneratedFunction> init_func_;
 };
 
 }  // namespace codegen

@@ -39,7 +39,7 @@ class Table;
 class Index {
  public:
   /// Constructor
-  explicit Index(const index::IndexMetadata &index_meta, Table &table);
+  Index(const index::IndexMetadata &index_meta, Table &table);
 
   /// Destructor
   virtual ~Index() = default;
