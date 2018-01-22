@@ -30,7 +30,7 @@ class ArtIndex : public Index {
   explicit ArtIndex(IndexMetadata *metadata);
 
   // Forward declare iterator class for later
-  class Iterator;
+  struct Iterator {};
 
   bool InsertEntry(const storage::Tuple *key, ItemPointer *value) override;
 

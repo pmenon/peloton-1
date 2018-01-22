@@ -6,28 +6,44 @@
 //
 // Identification: src/codegen/tile_group.cpp
 //
-// Copyright (c) 2015-2017, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
 #include "codegen/tile_group.h"
 
 #include "catalog/schema.h"
-#include "codegen/lang/if.h"
-#include "codegen/lang/loop.h"
-#include "codegen/proxy/runtime_functions_proxy.h"
-#include "codegen/scan_callback.h"
-#include "codegen/proxy/tile_group_proxy.h"
-#include "codegen/varlen.h"
-#include "codegen/vector.h"
 #include "codegen/lang/vectorized_loop.h"
+#include "codegen/proxy/runtime_functions_proxy.h"
+#include "codegen/proxy/tile_group_proxy.h"
+#include "codegen/scan_callback.h"
 #include "codegen/type/boolean_type.h"
+#include "codegen/varlen.h"
 
 namespace peloton {
 namespace codegen {
 
-// TileGroup constructor
 TileGroup::TileGroup(const catalog::Schema &schema) : schema_(schema) {}
+
+void TileGroup::LoadRow(CodeGen &codegen, llvm::Value *tile_group_ptr,
+                        ItemPointerAccess &item_pointer,
+                        const std::vector<oid_t> &col_ids,
+                        std::vector<codegen::Value> &col_vals) const {
+  auto num_cols = static_cast<uint32_t>(schema_.GetColumnCount());
+  auto *col_layout_type = ColumnLayoutInfoProxy::GetType(codegen);
+  auto *layout_arr =
+      codegen.AllocateBuffer(col_layout_type, num_cols, "columnLayout");
+
+  // Get the column layouts
+  auto col_layouts = GetColumnLayouts(codegen, tile_group_ptr, layout_arr);
+
+  // Row
+  TileGroupAccess tile_group_access{*this, col_layouts};
+  auto row = tile_group_access.GetRow(item_pointer.GetOffset(codegen));
+  for (auto col_id : col_ids) {
+    col_vals.emplace_back(row.LoadColumn(codegen, col_id));
+  }
+}
 
 // This method generates code to scan over all the tuples in the provided tile
 // group. The fourth argument is allocated stack space where ColumnLayoutInfo
@@ -45,9 +61,13 @@ TileGroup::TileGroup(const catalog::Schema &schema) : schema_(schema) {}
 // @endcode
 //
 void TileGroup::GenerateTidScan(CodeGen &codegen, llvm::Value *tile_group_ptr,
-                                llvm::Value *column_layouts,
                                 uint32_t batch_size,
                                 ScanCallback &consumer) const {
+  // Allocate some space for the column layouts
+  const auto num_columns = static_cast<uint32_t>(schema_.GetColumnCount());
+  llvm::Value *column_layouts = codegen.AllocateBuffer(
+      ColumnLayoutInfoProxy::GetType(codegen), num_columns, "columnLayout");
+
   // Get the column layouts
   auto col_layouts = GetColumnLayouts(codegen, tile_group_ptr, column_layouts);
 
@@ -65,13 +85,11 @@ void TileGroup::GenerateTidScan(CodeGen &codegen, llvm::Value *tile_group_ptr,
   }
 }
 
-// Call TileGroup::GetNextTupleSlot(...) to determine # of tuples in tile group.
 llvm::Value *TileGroup::GetNumTuples(CodeGen &codegen,
                                      llvm::Value *tile_group) const {
   return codegen.Call(TileGroupProxy::GetNextTupleSlot, {tile_group});
 }
 
-// Call TileGroup::GetTileGroupId()
 llvm::Value *TileGroup::GetTileGroupId(CodeGen &codegen,
                                        llvm::Value *tile_group) const {
   return codegen.Call(TileGroupProxy::GetTileGroupId, {tile_group});
@@ -89,7 +107,7 @@ std::vector<TileGroup::ColumnLayout> TileGroup::GetColumnLayouts(
     CodeGen &codegen, llvm::Value *tile_group_ptr,
     llvm::Value *column_layout_infos) const {
   // Call RuntimeFunctions::GetTileGroupLayout()
-  uint32_t num_cols = schema_.GetColumnCount();
+  auto num_cols = static_cast<uint32_t>(schema_.GetColumnCount());
   codegen.Call(
       RuntimeFunctionsProxy::GetTileGroupLayout,
       {tile_group_ptr, column_layout_infos, codegen.Const32(num_cols)});
@@ -109,14 +127,14 @@ std::vector<TileGroup::ColumnLayout> TileGroup::GetColumnLayouts(
   return layouts;
 }
 
-// Load a given column for the row with the given TID
+// Load a given column for the row with the given offset
 codegen::Value TileGroup::LoadColumn(
-    CodeGen &codegen, llvm::Value *tid,
+    CodeGen &codegen, llvm::Value *offset,
     const TileGroup::ColumnLayout &layout) const {
   // We're calculating: col[tid] = col_start + (tid * col_stride)
+  llvm::Value *jump = codegen->CreateMul(offset, layout.stride);
   llvm::Value *col_address =
-      codegen->CreateInBoundsGEP(codegen.ByteType(), layout.col_start_ptr,
-                                 codegen->CreateMul(tid, layout.col_stride));
+      codegen->CreateInBoundsGEP(codegen.ByteType(), layout.start_ptr, jump);
 
   // The value, length and is_null check
   llvm::Value *val = nullptr, *length = nullptr, *is_null = nullptr;
@@ -146,9 +164,8 @@ codegen::Value TileGroup::LoadColumn(
     PL_ASSERT(col_type != nullptr && col_len_type == nullptr);
 
     // val = *(col_type*)col_address;
-    val = codegen->CreateLoad(
-        col_type,
-        codegen->CreateBitCast(col_address, col_type->getPointerTo()));
+    col_address = codegen->CreateBitCast(col_address, col_type->getPointerTo());
+    val = codegen->CreateLoad(col_type, col_address);
 
     if (is_nullable) {
       // To check for NULL, we need to perform a comparison between the value we
@@ -178,24 +195,11 @@ codegen::Value TileGroup::LoadColumn(
   return codegen::Value{type, val, length, is_null};
 }
 
-//===----------------------------------------------------------------------===//
-// TILE GROUP ROW
-//===----------------------------------------------------------------------===//
-
-TileGroup::TileGroupAccess::Row::Row(const TileGroup &tile_group,
-                                     const std::vector<ColumnLayout> &layout,
-                                     llvm::Value *tid)
-    : tile_group_(tile_group), layout_(layout), tid_(tid) {}
-
-codegen::Value TileGroup::TileGroupAccess::Row::LoadColumn(
-    CodeGen &codegen, uint32_t col_idx) const {
-  PL_ASSERT(col_idx < layout_.size());
-  return tile_group_.LoadColumn(codegen, GetTID(), layout_[col_idx]);
-}
-
-//===----------------------------------------------------------------------===//
-// TILE GROUP
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// TileGroupAccess
+///
+////////////////////////////////////////////////////////////////////////////////
 
 TileGroup::TileGroupAccess::TileGroupAccess(
     const TileGroup &tile_group,
@@ -203,8 +207,30 @@ TileGroup::TileGroupAccess::TileGroupAccess(
     : tile_group_(tile_group), layout_(tile_group_layout) {}
 
 TileGroup::TileGroupAccess::Row TileGroup::TileGroupAccess::GetRow(
-    llvm::Value *tid) const {
-  return TileGroup::TileGroupAccess::Row{tile_group_, layout_, tid};
+    llvm::Value *offset) const {
+  return TileGroup::TileGroupAccess::Row{*this, offset};
+}
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Row
+///
+////////////////////////////////////////////////////////////////////////////////
+
+TileGroup::TileGroupAccess::Row::Row(const TileGroupAccess &tg_access,
+                                     llvm::Value *offset)
+    : tg_access_(tg_access), offset_(offset) {}
+
+codegen::Value TileGroup::TileGroupAccess::Row::LoadColumn(
+    CodeGen &codegen, uint32_t col_idx) const {
+  const auto &tile_group = tg_access_.GetTileGroup();
+  const auto &layout = tg_access_.GetLayout();
+
+  // Sanity check
+  PL_ASSERT(col_idx < layout.size());
+
+  // Load this row's column's value
+  return tile_group.LoadColumn(codegen, GetOffset(), layout[col_idx]);
 }
 
 }  // namespace codegen

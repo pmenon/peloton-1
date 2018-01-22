@@ -6,7 +6,7 @@
 //
 // Identification: src/codegen/table.cpp
 //
-// Copyright (c) 2015-2017, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,50 +18,75 @@
 #include "codegen/lang/if.h"
 #include "codegen/proxy/runtime_functions_proxy.h"
 #include "codegen/proxy/zone_map_proxy.h"
+#include "index/index.h"
 #include "storage/data_table.h"
 
 namespace peloton {
 namespace codegen {
 
-// Constructor
 Table::Table(storage::DataTable &table)
-    : table_(table), tile_group_(*table_.GetSchema()) {}
+    : table_(table), tile_group_(*table_.GetSchema()) {
+#if 0
+  for (uint32_t i = 0; i < table_.GetIndexCount(); i++) {
+    auto *index_meta = table_.GetIndex(i)->GetMetadata();
+    indexes_.emplace_back(Index::Create(*index_meta, *this));
+  }
+#endif
+}
 
-// We determine tile group count by calling DataTable::GetTileGroupCount(...)
+llvm::Value *Table::GetIndexWithOid(CodeGen &codegen, llvm::Value *table_ptr,
+                                    uint32_t index_oid) const {
+  return codegen.Call(RuntimeFunctionsProxy::GetIndexByOid,
+                      {table_ptr, codegen.Const32(index_oid)});
+}
+
+llvm::Type *Table::GetTableType(CodeGen &codegen) const {
+  return DataTableProxy::GetType(codegen);
+}
+
+std::string Table::GetName() const { return table_.GetName(); }
+
 llvm::Value *Table::GetTileGroupCount(CodeGen &codegen,
                                       llvm::Value *table_ptr) const {
   return codegen.Call(DataTableProxy::GetTileGroupCount, {table_ptr});
 }
 
-// We acquire a tile group instance by calling RuntimeFunctions::GetTileGroup().
 llvm::Value *Table::GetTileGroup(CodeGen &codegen, llvm::Value *table_ptr,
                                  llvm::Value *tile_group_id) const {
   return codegen.Call(RuntimeFunctionsProxy::GetTileGroup,
                       {table_ptr, tile_group_id});
 }
 
-// We acquire a Zone Map manager instance
 llvm::Value *Table::GetZoneMapManager(CodeGen &codegen) const {
   return codegen.Call(ZoneMapManagerProxy::GetInstance, {});
+}
+
+void Table::LoadRow(CodeGen &codegen, llvm::Value *table_ptr,
+                    ItemPointerAccess &item_pointer,
+                    const std::vector<oid_t> &col_ids,
+                    std::vector<codegen::Value> &col_vals) const {
+  // Get the tile group where the row is
+  auto *block = item_pointer.GetBlock(codegen);
+  auto *tg_offset = codegen->CreateZExt(block, codegen.Int64Type());
+  llvm::Value *tile_group = GetTileGroup(codegen, table_ptr, tg_offset);
+
+  // Load the requested columns for the row at the given offset
+  tile_group_.LoadRow(codegen, tile_group, item_pointer, col_ids, col_vals);
 }
 
 // Generate a scan over all tile groups.
 //
 // @code
-// column_layouts := alloca<peloton::ColumnLayoutInfo>(
-//     table.GetSchema().GetColumnCount())
-// predicate_array := alloca<peloton::PredicateInfo>(
-//     num_predicates)
 //
-// oid_t tile_group_idx := 0
+// PredicateInfo predicate_arr[num_predicates]
+//
 // num_tile_groups = GetTileGroupCount(table_ptr)
-//
-// for (; tile_group_idx < num_tile_groups; ++tile_group_idx) {
+// for (oid_t tile_group_idx = 0; tile_group_idx < num_tile_groups;
+//      ++tile_group_idx) {
 //   if (ShouldScanTileGroup(predicate_array, tile_group_idx)) {
-//      tile_group_ptr := GetTileGroup(table_ptr, tile_group_idx)
+//      tile_group_ptr = GetTileGroup(table_ptr, tile_group_idx)
 //      consumer.TileGroupStart(tile_group_ptr);
-//      tile_group.TidScan(tile_group_ptr, column_layouts, vector_size,
-//                         consumer);
+//      tile_group.TidScan(tile_group_ptr, batch_size, consumer);
 //      consumer.TileGroupEnd(tile_group_ptr);
 //   }
 // }
@@ -71,12 +96,6 @@ void Table::GenerateScan(CodeGen &codegen, llvm::Value *table_ptr,
                          uint32_t batch_size, ScanCallback &consumer,
                          llvm::Value *predicate_ptr,
                          size_t num_predicates) const {
-  // Allocate some space for the column layouts
-  const auto num_columns =
-      static_cast<uint32_t>(table_.GetSchema()->GetColumnCount());
-  llvm::Value *column_layouts = codegen.AllocateBuffer(
-      ColumnLayoutInfoProxy::GetType(codegen), num_columns, "columnLayout");
-
   // Allocate some space for the parsed predicates (if need be!)
   llvm::Value *predicate_array =
       codegen.NullPtr(PredicateInfoProxy::GetType(codegen)->getPointerTo());
@@ -114,8 +133,8 @@ void Table::GenerateScan(CodeGen &codegen, llvm::Value *table_ptr,
       consumer.TileGroupStart(codegen, tile_group_id, tile_group_ptr);
 
       // Generate the scan cover over the given tile group
-      tile_group_.GenerateTidScan(codegen, tile_group_ptr, column_layouts,
-                                  batch_size, consumer);
+      tile_group_.GenerateTidScan(codegen, tile_group_ptr, batch_size,
+                                  consumer);
 
       // Inform the consumer that we've finished iteration over the tile group
       consumer.TileGroupFinish(codegen, tile_group_ptr);
