@@ -66,7 +66,7 @@ class Invalid : public SqlType, public Singleton<Invalid> {
 
   llvm::Value *WriteBinaryComparable(
       UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE const Value &val,
-      UNUSED_ATTRIBUTE llvm::Value *buf) const {
+      UNUSED_ATTRIBUTE llvm::Value *buf) const override {
     // TODO(pmenon): Implement me
     throw Exception{"INVALID type cannot be written out binary comparable"};
   }
