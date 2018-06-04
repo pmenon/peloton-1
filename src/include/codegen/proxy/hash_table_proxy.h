@@ -18,29 +18,45 @@
 namespace peloton {
 namespace codegen {
 
-/// The proxy for HashTable::Entry
+/// The proxy for util::HashTable::Entry
 PROXY(Entry) {
   DECLARE_MEMBER(0, uint64_t, hash);
   DECLARE_MEMBER(1, util::HashTable::Entry *, next);
   DECLARE_TYPE;
 };
 
-/// The proxy for CCHashTable
+/// The proxy for util::HashTable
 PROXY(HashTable) {
-  DECLARE_MEMBER(0, char *, memory);
+  // clang-format off
+  DECLARE_MEMBER(0, char[sizeof(void *) +
+                         sizeof(uint32_t) +
+                         sizeof(uint32_t)],
+                 opaque_1);
   DECLARE_MEMBER(1, util::HashTable::Entry **, directory);
   DECLARE_MEMBER(2, uint64_t, size);
   DECLARE_MEMBER(3, uint64_t, mask);
-  DECLARE_MEMBER(4, char[sizeof(util::HashTable::EntryBuffer)], entry_buffer);
-  DECLARE_MEMBER(5, uint64_t, num_elems);
-  DECLARE_MEMBER(6, uint64_t, capacity);
-  DECLARE_MEMBER(7, char[sizeof(std::unique_ptr<char>)], stats);
+  DECLARE_MEMBER(4, char[sizeof(util::HashTable) +         // Memory block
+                         sizeof(void *) +         // Next free entry
+                         sizeof(uint64_t) +       // Available bytes
+                         sizeof(uint64_t) +       // # elements
+                         sizeof(uint64_t) +       // Capacity
+                         sizeof(void *) +         // Merging function
+                         sizeof(void *) +         // Partition heads
+                         sizeof(void *) +         // Partition tails
+                         sizeof(void *) +         // Partition hash tables
+                         sizeof(uint64_t) +       // Flush threshold
+                         sizeof(util::HashTable::Stats)],   // Flush threshold
+                 opaque_2);
+  // clang-format on
   DECLARE_TYPE;
 
   // Proxy all methods that will be called from codegen
   DECLARE_METHOD(Init);
   DECLARE_METHOD(Insert);
   DECLARE_METHOD(InsertLazy);
+  DECLARE_METHOD(InsertPartitioned);
+  DECLARE_METHOD(TransferPartitions);
+  DECLARE_METHOD(ExecutePartitionedScan);
   DECLARE_METHOD(BuildLazy);
   DECLARE_METHOD(ReserveLazy);
   DECLARE_METHOD(MergeLazyUnfinished);

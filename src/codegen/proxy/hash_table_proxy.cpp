@@ -41,12 +41,15 @@ llvm::Type *EntryProxy::GetType(CodeGen &codegen) {
 DEFINE_MEMBER(dummy, Entry, hash);
 DEFINE_MEMBER(dummy, Entry, next);
 
-DEFINE_TYPE(HashTable, "peloton::HashTable", memory, directory, size, mask,
-            entry_buffer, num_elems, capacity, stats);
+DEFINE_TYPE(HashTable, "peloton::HashTable", opaque_1, directory, size, mask,
+            opaque_2);
 
 DEFINE_METHOD(peloton::codegen::util, HashTable, Init);
 DEFINE_METHOD(peloton::codegen::util, HashTable, Insert);
 DEFINE_METHOD(peloton::codegen::util, HashTable, InsertLazy);
+DEFINE_METHOD(peloton::codegen::util, HashTable, InsertPartitioned);
+DEFINE_METHOD(peloton::codegen::util, HashTable, TransferPartitions);
+DEFINE_METHOD(peloton::codegen::util, HashTable, ExecutePartitionedScan);
 DEFINE_METHOD(peloton::codegen::util, HashTable, BuildLazy);
 DEFINE_METHOD(peloton::codegen::util, HashTable, ReserveLazy);
 DEFINE_METHOD(peloton::codegen::util, HashTable, MergeLazyUnfinished);

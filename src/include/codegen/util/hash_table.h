@@ -14,6 +14,8 @@
 
 #include <cstdint>
 
+#include "libcount/hll.h"
+
 #include "executor/executor_context.h"
 
 namespace peloton {
@@ -28,12 +30,21 @@ namespace util {
 /**
  * This is a bucket-chained hash table that separates value storage from the
  * primary hash table directory (a la VectorWise). The hash table supports two
- * modes: normal and lazy.
+ * three modes: normal, partitioned, and lazy.
  *
+ * Normal mode:
+ * ------------
  * In normal mode, inserts and probes can be interleaved. Calls to Insert()
  * allocate storage space and acquire a slot in the hash table directory,
  * resizing by doubling if appropriate.
  *
+ * Partitioned mode:
+ * -----------------
+ * Partitioned mode is designed for large-scale aggregations. In this mode, no
+ * duplicate keys are allowed.
+ *
+ * Lazy mode:
+ * ----------
  * In lazy mode, the hash table becomes a two-phase write-once-read-many (WORM)
  * structure. In the first phase, only inserts are allowed. After all inserts
  * are complete, the table "frozen" after which the table becomes read-only.
@@ -48,15 +59,27 @@ namespace util {
  */
 class HashTable {
  public:
-  /** Constructor */
+  // Forward declare
+  struct Entry;
+
+  /**
+   * Primary constructor.
+   *
+   * @param memory The memory pool used for all memory allocations
+   * @param key_size The size (in bytes) of
+   * @param value_size The size (in bytes) of values
+   */
   HashTable(::peloton::type::AbstractPool &memory, uint32_t key_size,
             uint32_t value_size);
 
-  /** Destructor */
+  /**
+   * Primary destructor.
+   */
   ~HashTable();
 
   /**
-   * Initialize the provided hash table
+   * Initialize the provided hash table. This is a static method used by codegen
+   * to initialize a pre-allocated hash table instance.
    *
    * @param table The table we're setting up
    * @param key_size The size of the keys in bytes
@@ -66,34 +89,117 @@ class HashTable {
                    uint32_t key_size, uint32_t value_size);
 
   /**
-   * Clean up all resources allocated by the provided table
+   * Clean up all resources allocated by the provided table. This is a static
+   * method used by codegen to invoke the destructor of the hash table.
    *
    * @param table The table we're cleaning up
    */
   static void Destroy(HashTable &table);
 
-  /**
-   * Make room in the hash table's storage space to store a new key-value pair
-   * with the provided hash value, but defer insertion into the directory to a
-   * later pointer.
-   *
-   * This is mainly used for two-phase hash-joins, where all insertions into
-   * the table happen in one phase, and all probes into the hash table happen
-   * in a separate phase. In such cases, BuildLazy() must be called to properly
-   * construct the hash table.
-   *
-   * @param hash The hash value of the tuple that will be inserted
-   * @return A memory region where the key and value can be stored
-   */
-  char *InsertLazy(uint64_t hash);
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Normal mode
+  ///
+  //////////////////////////////////////////////////////////////////////////////
 
   /**
-   * Make room in the hash table to store the new key-value pair.
+   * Insert a new key-value pair whose key has the provided hash value. This
+   * method returns a pointer to a memory space where the key and value can be
+   * serialized contiguously. Post insertion, the inserted key-value pair is
+   * immediately visible to subsequent probes into the hash table.
    *
-   * @param hash
-   * @return
+   * This generic version assumes opaque key and value bytes.
+   * See HashTable::TypedInsert() for a strongly typed insertion method.
+   *
+   * @param hash The hash value of the key in the key-value pair to be inserted
+   *
+   * @return A (contiguous) memory region where the key and value can be stored
    */
   char *Insert(uint64_t hash);
+
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Partitioned mode
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  using MergingFunction = void (*)(void *query_state, HashTable &table,
+                                   HashTable::Entry **partitions,
+                                   uint64_t part_begin, uint64_t part_end);
+
+  using PartitionedScanFunction = void (*)(void *query_state,
+                                           void *thread_state,
+                                           const HashTable &table);
+
+  /**
+   * Insert a new key-value pair whose key has the provided hash value. This
+   * method, like HashTable::Insert(), returns a pointer to a memory space where
+   * the key and value can be serialized contiguously. The inserted key-value
+   * pair may or may not be visible after this call. However, all key-value
+   * pairs will be visible after HashTable::BuildPartitioned().
+   *
+   * @param hash The hash value of the key in the key-value pair to be inserted
+   *
+   * @return A (contiguous) memory region where the key and value can be stored
+   */
+  char *InsertPartitioned(uint64_t hash);
+
+  /**
+   * Transfer all overflow partitions stored in each thread-local hash table
+   * (within ExecutorContext::ThreadStates) into this hash table. No hash table
+   * construction is done here.
+   *
+   * @param thread_states The container holding all thread states
+   * @param ht_offset The offset in each thread-local state where the
+   * thread-local hash table resides.
+   * @param merge_func The function used to build a partitioned hash table by
+   * merging the contents of a set of overflow partitions
+   */
+  void TransferPartitions(
+      const executor::ExecutorContext::ThreadStates &thread_states,
+      uint32_t ht_offset);
+
+  /**
+   * Execute a parallel scan over this partitioned hash table. The thread states
+   * object has been configured with the appropriate size (from codegen'd code)
+   * prior to this call. This function will configure the number of scan threads
+   * based on the size of the table.
+   *
+   * The callback scan function accepts two opaque state objects: an query state
+   * and a thread state. The query state is provided as a function argument. The
+   * thread state will be pulled from the provided ThreadStates object.
+   *
+   * @param thread_states The container holding all thread states
+   * @param query_state The (opaque) query state
+   * @param scan_func The callback scan function that will scan one partition of
+   * the partitioned hash table
+   */
+  void ExecutePartitionedScan(
+      void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
+      MergingFunction merge_func, PartitionedScanFunction scan_func);
+
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Lazy mode
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  /**
+   * Insert a new key-value pair whose key has the provided hash value. This
+   * method, like HashTable::Insert(), returns a pointer to a memory space where
+   * the key and value can be serialized contiguously. Unlike Insert(), the
+   * inserted key-value pair is not immediately visible after the insertion
+   * completes. It will only become visible after a call to BuildLazy() or
+   * MergeLazyUnfinished() (if in parallel mode).
+   *
+   * This generic version assumes opaque key and value bytes.
+   * See HashTable::TypedInsertLazy() for a strongly typed insertion method.
+   *
+   * @param hash The hash value of the key in the key-value pair to be inserted
+   *
+   * @return A (contiguous) memory region where the key and value can be stored
+   */
+  char *InsertLazy(uint64_t hash);
 
   /**
    * This function builds a hash table over all elements that have been lazily
@@ -101,8 +207,7 @@ class HashTable {
    * used in two-phase mode, i.e., where all insertions are performed first,
    * followed by a series of probes.
    *
-   * After this call, the hash table will not accept any more insertions. The
-   * hash table will be frozen.
+   * The hash table transitions to read-only after this call.
    */
   void BuildLazy();
 
@@ -129,9 +234,9 @@ class HashTable {
    * directory hash table, but has buffered a series of tuples into hash table
    * memory.
    *
-   * This function is called from different threads!
+   * NOTE: This function is called from different threads!
    *
-   * @param The hash table whose contents we will merge into this one..
+   * @param The hash table whose contents we will merge into this one.
    */
   void MergeLazyUnfinished(HashTable &other);
 
@@ -144,23 +249,14 @@ class HashTable {
   uint64_t NumElements() const { return num_elems_; }
   uint64_t Capacity() const { return capacity_; }
   double LoadFactor() const { return num_elems_ / 1.0 / directory_size_; }
+  uint64_t FlushThreshold() const { return flush_threshold_; }
+  uint64_t NumFlushes() const { return stats_.num_flushes; }
 
   //////////////////////////////////////////////////////////////////////////////
   ///
   /// Testing Utilities
   ///
   //////////////////////////////////////////////////////////////////////////////
-
-  /**
-   * Insert a key-value pair lazily into the hash table. This function is used
-   * mostly for testing since we specialize insertions in generated code.
-   *
-   * @param hash The hash value of the key
-   * @param key The key to store in the table
-   * @param value The value to store in the value
-   */
-  template <typename Key, typename Value>
-  void TypedInsertLazy(uint64_t hash, const Key &key, const Value &value);
 
   /**
    * Insert a key-value pair into the hash table. This function is used mostly
@@ -174,6 +270,30 @@ class HashTable {
   void TypedInsert(uint64_t hash, const Key &key, const Value &value);
 
   /**
+   * Insert a key-value pair lazily into the hash table. This function is used
+   * mostly for testing since we specialize insertions in generated code.
+   *
+   * @param hash The hash value of the key
+   * @param key The key to store in the table
+   * @param value The value to store in the value
+   */
+  template <typename Key, typename Value>
+  void TypedInsertLazy(uint64_t hash, const Key &key, const Value &value);
+
+  /**
+   *
+   * @tparam Partitioned
+   * @tparam Key
+   * @tparam Value
+   * @param hash
+   * @param key
+   * @param update_func
+   */
+  template <bool Partitioned, typename Key, typename Value>
+  void TypedUpsert(uint64_t hash, const Key &key,
+                   const std::function<void(bool, Value *)> &update_func);
+
+  /**
    * Probe a key in the hash table. This function is used mostly for testing.
    * Probing is completely specialized in generated code.
    *
@@ -184,7 +304,7 @@ class HashTable {
    */
   template <typename Key, typename Value>
   bool TypedProbe(uint64_t hash, const Key &key,
-                  std::function<void(const Value &)> &consumer);
+                  const std::function<void(const Value &)> &consumer_func);
 
   //////////////////////////////////////////////////////////////////////////////
   ///
@@ -206,95 +326,122 @@ class HashTable {
     Entry *next;
     char data[0];
 
+    Entry(uint64_t _hash, Entry *_next) : hash(_hash), next(_next) {}
+
     static uint32_t Size(uint32_t key_size, uint32_t value_size) {
       return sizeof(Entry) + key_size + value_size;
     }
   };
 
   /**
-   * An entry allocator
+   * Memory blocks are contiguous chunks of memory used to store key-value
+   * payloads in the hash table. Value storage is separated from the main
+   * directory.
+   *
+   * Memory blocks reserve the first 8-bytes for a pointer to another memory
+   * block, thus forming a linked list of blocks.
    */
-  class EntryBuffer {
-   public:
-    /**
-     * Constructor for a buffer of entries.
-     *
-     * @param memory The memory pool to source memory for entries from
-     * @param entry_size The size of an entry
-     */
-    EntryBuffer(::peloton::type::AbstractPool &memory, uint32_t entry_size);
+  struct MemoryBlock {
+    MemoryBlock *next;
+    char data[0];
+  };
 
-    /**
-     * Destructor.
-     */
-    ~EntryBuffer();
-
-    /**
-     * Return a pointer to the next available Entry slot. If insufficient memory
-     * is available, memory is taken from the pool.
-     *
-     * @return A pointer to a free Entry slot.
-     */
-    Entry *NextFree();
-
-    /**
-     * Transfer all allocated memory blocks in this entry buffer into the target
-     * buffer.
-     *
-     * @param target Buffer where all blocks are transferred to
-     */
-    void TransferMemoryBlocks(EntryBuffer &target);
-
-   private:
-    // This struct represents a chunk of heap memory. We chain together these
-    // chunks to avoid the need for a std::vector.
-    struct MemoryBlock {
-      MemoryBlock *next;
-      char data[0];
-    };
-
-    // The memory pool where block allocations are sourced
-    ::peloton::type::AbstractPool &memory_;
-
-    // The sizes of each entry
-    uint32_t entry_size_;
-
-    // The current active block
-    MemoryBlock *block_;
-
-    // A pointer into the block where the next position is
-    char *next_entry_;
-
-    // The number of available bytes left in the block
-    uint64_t available_bytes_;
+  /**
+   * A structure to capture various operational statistics over the lifetime use
+   * of this hash table.
+   */
+  struct Stats {
+    uint64_t num_grows = 0;
+    uint64_t num_flushes = 0;
   };
 
  private:
-  // Does the hash table need resizing?
+  /**
+   * Determines if this hash table has to be resized.
+   *
+   * @return True if the hash table should grow
+   */
   bool NeedsResize() const { return num_elems_ == capacity_; }
 
-  // Resize the hash table
-  void Resize();
+  /**
+   * Resize the hash table
+   */
+  void Grow();
+
+  /**
+   * Allocate a new Entry object from value storage for a new key-value pair.
+   *
+   * @param hash The hash value of the new key
+   *
+   * @return An Entry where the key-value pair can be stored
+   */
+  Entry *NewEntry(uint64_t hash);
+
+  /**
+   * Transfer all allocated memory blocks that this hash table has allocated to
+   * the target table. This needs to be performed in a thread-safe manner since
+   * the target can be under concurrent modification.
+   *
+   * @param target The hash table that takes ownership of our allocated memory
+   */
+  void TransferMemoryBlocks(HashTable &target);
+
+  /**
+   * Flush and redistribute all data stored in the hash table into the set of
+   * overflow partitions. This completely clears the hash table (i.e., the hash
+   * table will indicate that no elements are stored).
+   */
+  void FlushToOverflowPartitions();
+
+  /**
+   * Build a branch new hash table from the tuples stored in the partition with
+   * the provided partition ID. This hash table owns the created table.
+   *
+   * @param partition_id The ID of the partition we'll create the hash table on
+   */
+  const HashTable *BuildPartitionedTable(void *query_state,
+                                         uint32_t partition_id);
+
+  /**
+   *
+   * @param num_elems
+   */
+  void Reserve(uint32_t num_elems);
 
  private:
   // The memory allocator used for all allocations in this hash table
   ::peloton::type::AbstractPool &memory_;
+  uint32_t key_size_;
+  uint32_t value_size_;
 
   // The directory of the hash table
   Entry **directory_;
   uint64_t directory_size_;
   uint64_t directory_mask_;
 
-  // Entry allocator
-  EntryBuffer entry_buffer_;
+  // The current active block
+  MemoryBlock *block_;
+
+  // A pointer into the block where the next position is
+  char *next_entry_;
+
+  // The number of available bytes left in the block
+  uint64_t available_bytes_;
 
   // The number of elements stored in this hash table, and the max before it
   // needs to be resized
   uint64_t num_elems_;
   uint64_t capacity_;
 
-  // Info about partitions
-  // ...
+  // Overflow partitions
+  MergingFunction merging_func_;
+  Entry **part_heads_;
+  Entry **part_tails_;
+  HashTable **part_tables_;
+  uint64_t flush_threshold_;
+
+  // Stats
+  Stats stats_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -304,14 +451,6 @@ class HashTable {
 ////////////////////////////////////////////////////////////////////////////////
 
 template <typename Key, typename Value>
-void HashTable::TypedInsertLazy(uint64_t hash, const Key &key,
-                                const Value &value) {
-  auto *data = InsertLazy(hash);
-  *reinterpret_cast<Key *>(data) = key;
-  *reinterpret_cast<Value *>(data + sizeof(Key)) = value;
-}
-
-template <typename Key, typename Value>
 void HashTable::TypedInsert(uint64_t hash, const Key &key, const Value &value) {
   auto *data = Insert(hash);
   *reinterpret_cast<Key *>(data) = key;
@@ -319,8 +458,36 @@ void HashTable::TypedInsert(uint64_t hash, const Key &key, const Value &value) {
 }
 
 template <typename Key, typename Value>
+void HashTable::TypedInsertLazy(uint64_t hash, const Key &key,
+                                const Value &value) {
+  auto *data = InsertLazy(hash);
+  *reinterpret_cast<Key *>(data) = key;
+  *reinterpret_cast<Value *>(data + sizeof(Key)) = value;
+}
+
+template <bool Partitioned, typename Key, typename Value>
+void HashTable::TypedUpsert(uint64_t hash, const Key &key,
+                            const std::function<void(bool, Value *)> &update_func) {
+  // Lookup
+  auto *entry = directory_[hash & directory_mask_];
+
+  while (entry != nullptr) {
+    if (entry->hash == hash && *reinterpret_cast<Key *>(entry->data) == key) {
+      update_func(true, reinterpret_cast<Value *>(entry->data + sizeof(Key)));
+      return;
+    }
+    entry = entry->next;
+  }
+
+  // Key doesn't exist in table, insert now
+  char *ret = (Partitioned ? InsertPartitioned(hash) : Insert(hash));
+  *reinterpret_cast<Key *>(ret) = key;
+  update_func(false, reinterpret_cast<Value *>(ret + sizeof(Key)));
+}
+
+template <typename Key, typename Value>
 bool HashTable::TypedProbe(uint64_t hash, const Key &key,
-                           std::function<void(const Value &)> &consumer) {
+                           const std::function<void(const Value &)> &consumer_func) {
   // Initial index in the directory
   uint64_t index = hash & directory_mask_;
 
@@ -333,7 +500,7 @@ bool HashTable::TypedProbe(uint64_t hash, const Key &key,
   while (entry != nullptr) {
     if (entry->hash == hash && *reinterpret_cast<Key *>(entry->data) == key) {
       auto *value = reinterpret_cast<Value *>(entry->data + sizeof(Key));
-      consumer(*value);
+      consumer_func(*value);
       found = true;
     }
     entry = entry->next;

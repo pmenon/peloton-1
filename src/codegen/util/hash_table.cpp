@@ -13,108 +13,39 @@
 #include "codegen/util/hash_table.h"
 
 #include "common/platform.h"
+#include "common/synchronization/count_down_latch.h"
+#include "threadpool/mono_queue_pool.h"
 #include "type/abstract_pool.h"
 
 namespace peloton {
 namespace codegen {
 namespace util {
 
-static const uint32_t kDefaultNumElements = 256;
-static const uint32_t kNumBlockElems = 1024;
+static constexpr uint32_t kDefaultNumElements = 128;
+static constexpr uint32_t kDefaultNumPartitions = 512;
+static constexpr uint32_t kNumBlockElems = 1024;
 
 static_assert((kDefaultNumElements & (kDefaultNumElements - 1)) == 0,
               "Default number of elements must be a power of two");
 
-////////////////////////////////////////////////////////////////////////////////
-///
-/// EntryBuffer
-///
-////////////////////////////////////////////////////////////////////////////////
-
-HashTable::EntryBuffer::EntryBuffer(::peloton::type::AbstractPool &memory,
-                                    uint32_t entry_size)
-    : memory_(memory), entry_size_(entry_size) {
-  // We also need to allocate some space to store tuples. Tuples are stored
-  // externally from the main hash table in a separate values memory space.
-  uint64_t block_size = sizeof(MemoryBlock) + (entry_size_ * kNumBlockElems);
-  block_ = reinterpret_cast<MemoryBlock *>(memory_.Allocate(block_size));
-  block_->next = nullptr;
-
-  // Set the next tuple write position and the available bytes
-  next_entry_ = block_->data;
-  available_bytes_ = block_size - sizeof(MemoryBlock);
-}
-
-HashTable::EntryBuffer::~EntryBuffer() {
-  // Free all the blocks we've allocated
-  MemoryBlock *block = block_;
-  while (block != nullptr) {
-    MemoryBlock *next = block->next;
-    memory_.Free(block);
-    block = next;
-  }
-  block_ = nullptr;
-}
-
-HashTable::Entry *HashTable::EntryBuffer::NextFree() {
-  if (entry_size_ > available_bytes_) {
-    uint64_t block_size = sizeof(MemoryBlock) + (entry_size_ * kNumBlockElems);
-    auto *new_block =
-        reinterpret_cast<MemoryBlock *>(memory_.Allocate(block_size));
-    new_block->next = block_;
-    block_ = new_block;
-    next_entry_ = new_block->data;
-    available_bytes_ = block_size - sizeof(MemoryBlock);
-  }
-
-  auto *entry = reinterpret_cast<Entry *>(next_entry_);
-  entry->next = nullptr;
-
-  next_entry_ += entry_size_;
-  available_bytes_ -= entry_size_;
-
-  return entry;
-}
-
-void HashTable::EntryBuffer::TransferMemoryBlocks(
-    HashTable::EntryBuffer &target) {
-  // Find end of our memory block chain
-  MemoryBlock *tail = block_;
-
-  // Check if there is anything to transfer
-  if (tail == nullptr) {
-    return;
-  }
-
-  // Move to the end
-  while (tail->next != nullptr) {
-    tail = tail->next;
-  }
-
-  // Transfer everything to the target entry buffer
-  do {
-    tail->next = target.block_;
-  } while (!::peloton::atomic_cas(&target.block_, target.block_, block_));
-
-  // Success
-  block_ = nullptr;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-///
-/// Hash Table
-///
-////////////////////////////////////////////////////////////////////////////////
-
 HashTable::HashTable(::peloton::type::AbstractPool &memory, uint32_t key_size,
                      uint32_t value_size)
     : memory_(memory),
+      key_size_(key_size),
+      value_size_(value_size),
       directory_(nullptr),
       directory_size_(0),
       directory_mask_(0),
-      entry_buffer_(memory, Entry::Size(key_size, value_size)),
+      block_(nullptr),
+      next_entry_(nullptr),
+      available_bytes_(0),
       num_elems_(0),
-      capacity_(kDefaultNumElements) {
+      capacity_(kDefaultNumElements),
+      merging_func_(nullptr),
+      part_heads_(nullptr),
+      part_tails_(nullptr),
+      part_tables_(nullptr),
+      flush_threshold_(capacity_) {
   // Upon creation, we allocate room for kDefaultNumElements in the hash table.
   // We assume 50% load factor on the directory, thus the directory size is
   // twice the number of elements.
@@ -125,13 +56,58 @@ HashTable::HashTable(::peloton::type::AbstractPool &memory, uint32_t key_size,
   directory_ = static_cast<Entry **>(memory_.Allocate(alloc_size));
 
   PELOTON_MEMSET(directory_, 0, alloc_size);
+
+  // We also need to allocate some space to store tuples. Tuples are stored
+  // externally from the main hash table in a separate values memory space.
+  auto entry_size = key_size + value_size;
+  uint64_t block_size = sizeof(MemoryBlock) + (entry_size * kNumBlockElems);
+  block_ = reinterpret_cast<MemoryBlock *>(memory_.Allocate(block_size));
+  block_->next = nullptr;
+
+  // Set the next tuple write position and the available bytes
+  next_entry_ = block_->data;
+  available_bytes_ = block_size - sizeof(MemoryBlock);
 }
 
 HashTable::~HashTable() {
+  // Free memory blocks
+  if (block_ != nullptr) {
+    // Free all the blocks we've allocated
+    MemoryBlock *block = block_;
+    while (block != nullptr) {
+      MemoryBlock *next = block->next;
+      memory_.Free(block);
+      block = next;
+    }
+    block_ = nullptr;
+  }
+
   // Free the directory
   if (directory_ != nullptr) {
     memory_.Free(directory_);
     directory_ = nullptr;
+  }
+
+  // Free partitions
+  if (part_heads_ != nullptr) {
+    memory_.Free(part_heads_);
+    part_heads_ = nullptr;
+  }
+
+  if (part_tails_ != nullptr) {
+    memory_.Free(part_tails_);
+    part_tails_ = nullptr;
+  }
+
+  if (part_tables_ != nullptr) {
+    for (uint32_t i = 0; i < kDefaultNumPartitions; i++) {
+      if (part_tables_[i] != nullptr) {
+        HashTable::Destroy(*part_tables_[i]);
+        memory_.Free(part_tables_[i]);
+      }
+    }
+    memory_.Free(part_tables_);
+    part_tables_ = nullptr;
   }
 }
 
@@ -142,13 +118,201 @@ void HashTable::Init(HashTable &table, executor::ExecutorContext &exec_ctx,
 
 void HashTable::Destroy(HashTable &table) { table.~HashTable(); }
 
+char *HashTable::Insert(uint64_t hash) {
+  // Resize the hash table if needed
+  if (NeedsResize()) {
+    Grow();
+  }
+
+  // Allocate an entry from storage
+  Entry *entry = NewEntry(hash);
+
+  // Insert into hash table
+  uint64_t index = hash & directory_mask_;
+  entry->next = directory_[index];
+  directory_[index] = entry;
+
+  // Bump stats
+  num_elems_++;
+
+  // Return data pointer for key/value storage
+  return entry->data;
+}
+
+char *HashTable::InsertPartitioned(uint64_t hash) {
+  char *ret = Insert(hash);
+  if (num_elems_ >= flush_threshold_) {
+    FlushToOverflowPartitions();
+  }
+  return ret;
+}
+
+void HashTable::FlushToOverflowPartitions() {
+  if (part_heads_ == nullptr) {
+    PELOTON_ASSERT(part_tails_ == nullptr);
+    size_t num_bytes = sizeof(Entry *) * kDefaultNumPartitions;
+    part_heads_ = static_cast<Entry **>(memory_.Allocate(num_bytes));
+    part_tails_ = static_cast<Entry **>(memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(part_heads_, 0, num_bytes);
+    PELOTON_MEMSET(part_tails_, 0, num_bytes);
+  }
+
+  for (uint64_t i = 0; i < directory_size_; i++) {
+    Entry *entry = directory_[i];
+
+    // Move whole bucket chain to overflow partitions
+    while (entry != nullptr) {
+      // Grab a handle to the next entry
+      Entry *next = entry->next;
+
+      // Move entry into appropriate partition
+      // TODO: partition ID computation
+      uint64_t part_idx = (entry->hash >> 8ul) & 0x1ff;
+      entry->next = part_heads_[part_idx];
+      part_heads_[part_idx] = entry;
+      if (part_tails_[part_idx] == nullptr) {
+        part_tails_[part_idx] = entry;
+      }
+
+      // Move along
+      entry = next;
+    }
+
+    // Empty the directory slot
+    directory_[i] = nullptr;
+  }
+
+  // No elements in the directory
+  num_elems_ = 0;
+
+  // Increment number of flushes
+  stats_.num_flushes++;
+}
+
+const HashTable *HashTable::BuildPartitionedTable(void *query_state,
+                                                  uint32_t partition_id) {
+  // Sanity checks
+  PELOTON_ASSERT(part_heads_ != nullptr &&
+                 "Partition heads array not allocated");
+  PELOTON_ASSERT(part_heads_[partition_id] != nullptr &&
+                 "No head for the overflow partition exists");
+  PELOTON_ASSERT(part_tables_[partition_id] == nullptr &&
+                 "No table for the overflow partition exists");
+  PELOTON_ASSERT(merging_func_ != nullptr &&
+                 "No merging function is set. You should only call this "
+                 "through BuildPartitioned() or TransferPartitions() ...");
+
+  // Allocate a table
+  auto *table = new (memory_.Allocate(sizeof(HashTable)))
+      HashTable(memory_, key_size_, value_size_);
+
+// Reserve based on partition sample
+#if 0
+  table->Reserve(
+      static_cast<uint32_t>(part_samples_[partition_id]->Estimate()));
+#endif
+
+  // Assign into partition
+  part_tables_[partition_id] = table;
+
+  // Merge the partition into the table using the compiled merging function
+  merging_func_(query_state, *table, part_heads_, partition_id,
+                partition_id + 1);
+
+  // Done
+  return table;
+}
+
+void HashTable::TransferPartitions(
+    const executor::ExecutorContext::ThreadStates &thread_states,
+    uint32_t ht_offset) {
+  // Collect all thread-local hash tables
+  std::vector<HashTable *> tables;
+  thread_states.ForEach<HashTable>(ht_offset, [&tables](HashTable *hash_table) {
+    tables.emplace_back(hash_table);
+  });
+
+  // Flush each thread-local hash table
+  for (auto *table : tables) {
+    table->FlushToOverflowPartitions();
+  }
+
+  // Transfer overflow partitions from each thread-local hash table to us
+  for (auto *table : tables) {
+    for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+      if (table->part_heads_[part_idx] != nullptr) {
+        // If there's a head pointer, there must be a tail pointer too
+        PELOTON_ASSERT(table->part_tails_[part_idx] != nullptr);
+        table->part_tails_[part_idx]->next = part_heads_[part_idx];
+        part_heads_[part_idx] = table->part_heads_[part_idx];
+        if (part_tails_[part_idx] == nullptr) {
+          part_tails_[part_idx] = table->part_tails_[part_idx];
+        }
+      }
+    }
+  }
+}
+
+void HashTable::ExecutePartitionedScan(
+    void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
+    MergingFunction merge_func, PartitionedScanFunction scan_func) {
+  // Set the merging function
+  PELOTON_ASSERT(merge_func != nullptr);
+  merging_func_ = merge_func;
+
+  // Allocate partition tables array
+  PELOTON_ASSERT(part_tables_ == nullptr);
+  {
+    auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
+    part_tables_ = static_cast<HashTable **>(memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(part_tables_, 0, num_bytes);
+  }
+
+  // Count number of partitions to build
+  uint32_t num_parts = 0;
+  for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+    num_parts++;
+  }
+
+  // Distribute work
+  {
+    // Worker pool
+    auto &worker_pool = threadpool::MonoQueuePool::GetExecutionInstance();
+
+    // Allocate a slot for each worker thread
+    thread_states.Allocate(worker_pool.NumWorkers());
+
+    // The latch
+    common::synchronization::CountDownLatch latch(num_parts);
+
+    // Iterate over all partitions, spawning work to build tables
+    for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+      if (part_heads_[part_idx] != nullptr) {
+        worker_pool.SubmitTask([this, &query_state, &thread_states, scan_func,
+                                &latch, part_idx]() {
+          // Build partitioned table
+          auto *table = BuildPartitionedTable(query_state, part_idx);
+
+          // Send to scan function
+          // TODO: thread states
+          scan_func(query_state, thread_states.AccessThreadState(0), *table);
+
+          // Count down
+          latch.CountDown();
+        });
+      }
+    }
+
+    // Wait
+    latch.Await(0);
+  }
+}
+
 char *HashTable::InsertLazy(uint64_t hash) {
-  // Since this is a lazy insertion, we just need to acquire/allocate an entry
-  // from storage. It is assumed that actual construction of the hash table is
-  // done by a subsequent call to BuildLazy() only after ALL lazy insertions
-  // have completed.
-  auto *entry = entry_buffer_.NextFree();
-  entry->hash = hash;
+  // Since this is a lazy insertion, we only allocate an entry. We don't insert
+  // the entry into its correct position in the hash table until a call to
+  // BuildLazy() or MergeLazy() is made.
+  auto *entry = NewEntry(hash);
 
   // Insert the entry into the linked list in the first directory slot
   if (directory_[0] == nullptr) {
@@ -162,27 +326,6 @@ char *HashTable::InsertLazy(uint64_t hash) {
     directory_[1]->next = entry;
     directory_[1] = entry;
   }
-
-  num_elems_++;
-
-  // Return data pointer for key/value storage
-  return entry->data;
-}
-
-char *HashTable::Insert(uint64_t hash) {
-  // Resize the hash table if needed
-  if (NeedsResize()) {
-    Resize();
-  }
-
-  // Acquire/allocate an entry from storage
-  Entry *entry = entry_buffer_.NextFree();
-  entry->hash = hash;
-
-  // Insert into hash table
-  uint64_t index = hash & directory_mask_;
-  entry->next = directory_[index];
-  directory_[index] = entry;
 
   num_elems_++;
 
@@ -275,14 +418,10 @@ void HashTable::MergeLazyUnfinished(HashTable &other) {
 
   // Transfer all allocated memory blocks in the other table into this one
   PELOTON_ASSERT(&memory_ == &other.memory_);
-  other.num_elems_ = other.capacity_ = 0;
-  other.entry_buffer_.TransferMemoryBlocks(entry_buffer_);
+  other.TransferMemoryBlocks(*this);
 }
 
-void HashTable::Resize() {
-  // Sanity check
-  PELOTON_ASSERT(NeedsResize());
-
+void HashTable::Grow() {
   // Double the capacity
   capacity_ *= 2;
 
@@ -317,6 +456,59 @@ void HashTable::Resize() {
   directory_size_ = new_dir_size;
   directory_mask_ = new_dir_mask;
   directory_ = new_dir;
+
+  // Update stats
+  stats_.num_grows++;
+}
+
+HashTable::Entry *HashTable::NewEntry(uint64_t hash) {
+  auto entry_size = Entry::Size(key_size_, value_size_);
+
+  // Do we have enough room to store a new entry in the current memory block?
+  if (entry_size > available_bytes_) {
+    uint64_t block_size = sizeof(MemoryBlock) + (entry_size * kNumBlockElems);
+    auto *new_block =
+        reinterpret_cast<MemoryBlock *>(memory_.Allocate(block_size));
+    new_block->next = block_;
+    block_ = new_block;
+    next_entry_ = new_block->data;
+    available_bytes_ = block_size - sizeof(MemoryBlock);
+  }
+
+  // The entry
+  auto *entry = new (next_entry_) Entry(hash, nullptr);
+
+  // Bump pointer and reduce available bytes
+  next_entry_ += entry_size;
+  available_bytes_ -= entry_size;
+
+  // Done
+  return entry;
+}
+
+void HashTable::TransferMemoryBlocks(HashTable &target) {
+  // Find end of our memory block chain
+  MemoryBlock *tail = block_;
+
+  // Check if there is anything to transfer
+  if (tail == nullptr) {
+    return;
+  }
+
+  // Move to the end
+  while (tail->next != nullptr) {
+    tail = tail->next;
+  }
+
+  // Transfer everything to the target entry buffer
+  do {
+    tail->next = target.block_;
+  } while (!::peloton::atomic_cas(&target.block_, target.block_, block_));
+
+  // Success
+  block_ = nullptr;
+  num_elems_ = 0;
+  capacity_ = 0;
 }
 
 }  // namespace util

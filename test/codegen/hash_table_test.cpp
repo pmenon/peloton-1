@@ -14,11 +14,13 @@
 #include <iosfwd>
 #include <random>
 
+#include <boost/functional.hpp>
 #include "murmur3/MurmurHash3.h"
 
+#include "codegen/runtime_functions.h"
+#include "codegen/util/hash_table.h"
 #include "common/harness.h"
 #include "common/timer.h"
-#include "codegen/util/hash_table.h"
 
 namespace peloton {
 namespace test {
@@ -39,7 +41,7 @@ struct Key {
     static constexpr uint32_t seed = 12345;
     uint64_t h1 = MurmurHash3_x86_32(&k1, sizeof(uint32_t), seed);
     uint64_t h2 = MurmurHash3_x86_32(&k2, sizeof(uint32_t), seed);
-    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+    return h1 * 0x9ddfea08eb382d69ull * h2;
   }
 
   friend std::ostream &operator<<(std::ostream &os, const Key &k) {
@@ -73,7 +75,7 @@ class HashTableTest : public PelotonTest {
 };
 
 TEST_F(HashTableTest, CanInsertUniqueKeys) {
-  codegen::util::HashTable table{GetMemPool(), sizeof(Key), sizeof(Value)};
+  codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
   constexpr uint32_t to_insert = 50000;
   constexpr uint32_t c1 = 4444;
@@ -94,7 +96,8 @@ TEST_F(HashTableTest, CanInsertUniqueKeys) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count, &c1](const Value &v) {
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
       EXPECT_EQ(key.k2, v.v1)
           << "Value's [v1] found in table doesn't match insert key";
       EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
@@ -133,7 +136,7 @@ TEST_F(HashTableTest, BuildEmptyHashTable) {
 }
 
 TEST_F(HashTableTest, CanInsertDuplicateKeys) {
-  codegen::util::HashTable table{GetMemPool(), sizeof(Key), sizeof(Value)};
+  codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
   constexpr uint32_t to_insert = 50000;
   constexpr uint32_t c1 = 4444;
@@ -163,7 +166,8 @@ TEST_F(HashTableTest, CanInsertDuplicateKeys) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count, &c1](const Value &v) {
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
       EXPECT_EQ(key.k2, v.v1)
           << "Value's [v1] found in table doesn't match insert key";
       EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
@@ -210,7 +214,8 @@ TEST_F(HashTableTest, CanInsertLazilyWithDups) {
   // Lookups should succeed
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count, &c1](const Value &v) {
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
       EXPECT_EQ(key.k2, v.v1)
           << "Value's [v1] found in table doesn't match insert key";
       EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
@@ -237,68 +242,85 @@ TEST_F(HashTableTest, ParallelMerge) {
   std::vector<Key> keys;
 
   // The global hash table
-  codegen::util::HashTable global_table{*exec_ctx.GetPool(), sizeof(Key),
-                                        sizeof(Value)};
+  codegen::util::HashTable global_table(*exec_ctx.GetPool(), sizeof(Key),
+                                        sizeof(Value));
 
   auto add_key = [&keys_mutex, &keys](const Key &k) {
     std::lock_guard<std::mutex> lock{keys_mutex};
     keys.emplace_back(k);
   };
 
-  // Insert function
-  auto insert_fn = [&add_key, &exec_ctx](uint64_t tid) {
-    // Get the local table for this thread
-    auto *table = reinterpret_cast<codegen::util::HashTable *>(
-        exec_ctx.GetThreadStates().AccessThreadState(tid));
+  ////////////////////////////////////////////////////////////////////
+  /// Insert data in parallel into thread-local hash tables
+  ////////////////////////////////////////////////////////////////////
+  {
+    auto insert_fn = [&add_key, &exec_ctx](uint64_t tid) {
+      // Get the local table for this thread
+      auto &thread_states = exec_ctx.GetThreadStates();
+      auto *table =
+          thread_states.AccessThreadStateAs<codegen::util::HashTable>(tid);
 
-    // Initialize it
-    codegen::util::HashTable::Init(*table, exec_ctx, sizeof(Key),
-                                   sizeof(Value));
+      // Initialize it
+      codegen::util::HashTable::Init(*table, exec_ctx, sizeof(Key),
+                                     sizeof(Value));
 
-    // Insert keys disjoint from other threads
-    for (uint32_t i = tid * to_insert, end = i + to_insert; i != end; i++) {
-      Key k{static_cast<uint32_t>(tid), i};
-      Value v = {.v1 = k.k2, .v2 = k.k1, .v3 = 3, .v4 = 4444};
-      table->TypedInsertLazy(k.Hash(), k, v);
+      // Insert keys disjoint from other threads
+      for (uint32_t i = tid * to_insert, end = i + to_insert; i != end; i++) {
+        Key key(static_cast<uint32_t>(tid), i);
+        Value value = {.v1 = key.k2, .v2 = key.k1, .v3 = 3, .v4 = 4444};
+        table->TypedInsertLazy(key.Hash(), key, value);
 
-      add_key(k);
+        add_key(key);
+      }
+    };
+
+    // Launch
+    LaunchParallelTest(num_threads, insert_fn);
+
+    // Check
+    for (uint32_t tid = 0; tid < num_threads; tid++) {
+      auto *ht = reinterpret_cast<codegen::util::HashTable *>(
+          thread_states.AccessThreadState(tid));
+      EXPECT_EQ(to_insert, ht->NumElements());
     }
-  };
-
-  auto merge_fn = [&global_table, &thread_states](uint64_t tid) {
-    // Get the local table for this threads
-    auto *table = reinterpret_cast<codegen::util::HashTable *>(
-        thread_states.AccessThreadState(tid));
-
-    // Merge it into the global table
-    global_table.MergeLazyUnfinished(*table);
-  };
-
-  // First insert into thread local tables in parallel
-  LaunchParallelTest(num_threads, insert_fn);
-  for (uint32_t tid = 0; tid < num_threads; tid++) {
-    auto *ht = reinterpret_cast<codegen::util::HashTable *>(
-        thread_states.AccessThreadState(tid));
-    EXPECT_EQ(to_insert, ht->NumElements());
   }
 
-  // Now resize global table
-  global_table.ReserveLazy(thread_states, 0);
-  EXPECT_EQ(NextPowerOf2(keys.size()), global_table.Capacity());
+  ////////////////////////////////////////////////////////////////////
+  /// Resize global hash table based on thread-local sizes
+  ////////////////////////////////////////////////////////////////////
+  {
+    global_table.ReserveLazy(thread_states, 0);
+    EXPECT_EQ(NextPowerOf2(keys.size()), global_table.Capacity());
+  }
 
-  // Now merge thread-local tables into global table in parallel
-  LaunchParallelTest(num_threads, merge_fn);
+  ////////////////////////////////////////////////////////////////////
+  /// Merge thread-local tables into global in parallel
+  ////////////////////////////////////////////////////////////////////
+  {
+    auto merge_fn = [&global_table, &thread_states](uint64_t tid) {
+      auto *table =
+          thread_states.AccessThreadStateAs<codegen::util::HashTable>(tid);
+      global_table.MergeLazyUnfinished(*table);
+    };
 
-  // Clean up local tables
-  for (uint32_t tid = 0; tid < num_threads; tid++) {
-    auto *table = reinterpret_cast<codegen::util::HashTable *>(
-        thread_states.AccessThreadState(tid));
-    codegen::util::HashTable::Destroy(*table);
+    LaunchParallelTest(num_threads, merge_fn);
+  }
+
+  ////////////////////////////////////////////////////////////////////
+  /// Clean up thread-local tables
+  ////////////////////////////////////////////////////////////////////
+  {
+    for (uint32_t tid = 0; tid < num_threads; tid++) {
+      auto *table = reinterpret_cast<codegen::util::HashTable *>(
+          thread_states.AccessThreadState(tid));
+      codegen::util::HashTable::Destroy(*table);
+    }
   }
 
   // Now probe global
   EXPECT_EQ(to_insert * num_threads, global_table.NumElements());
   EXPECT_LE(global_table.NumElements(), global_table.Capacity());
+
   for (const auto &key : keys) {
     uint32_t count = 0;
     std::function<void(const Value &v)> f = [&key, &count](const Value &v) {
@@ -313,6 +335,127 @@ TEST_F(HashTableTest, ParallelMerge) {
     EXPECT_EQ(1, count) << "Found duplicate keys in unique key test";
   }
 }
+
+namespace {
+
+void PartitionedUpdateFunction(bool exists, Value *curr_val) {
+  if (exists) {
+    curr_val->v1++;
+  } else {
+    *curr_val = {1, 2, 3, 4};
+  }
+}
+
+}  // namespace
+
+TEST_F(HashTableTest, CanInsertPartitioned) {
+  codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
+
+  const uint32_t num_groups = static_cast<uint32_t>(table.FlushThreshold() + 9);
+  const uint32_t to_insert = 50000;
+
+  std::vector<Key> keys;
+
+  /// Generate test data
+  for (uint32_t i = 0; i < to_insert; i++) {
+    keys.emplace_back(i % num_groups, i % num_groups);
+  }
+
+  /// Insert partitioned
+  for (uint32_t i = 0; i < to_insert; i++) {
+    table.TypedUpsert<true, Key, Value>(
+        keys[i].Hash(), keys[i], [](bool exists, Value *curr) {
+          PartitionedUpdateFunction(exists, curr);
+        });
+  }
+
+  // We should have flushed at least once
+  EXPECT_TRUE(table.NumFlushes() > 0);
+
+  // We can never have more elements than # groups
+  EXPECT_FALSE(table.NumElements() > num_groups);
+}
+
+#if 0
+TEST_F(HashTableTest, ParallelPartitionedBuild) {
+  constexpr uint32_t num_threads = 4;
+
+  // Vary groups between 10, 100, 1000
+  const uint32_t num_keys = 100000;
+  for (const uint32_t num_groups : {10u, 100u, 1000u}) {
+    executor::ExecutorContext ctx(nullptr);
+    codegen::util::HashTable global_table(*ctx.GetPool(), sizeof(Key),
+                                          sizeof(Value));
+
+    // Setup thread state for "num_threads"
+    ctx.GetThreadStates().Reset(sizeof(codegen::util::HashTable));
+    ctx.GetThreadStates().Allocate(num_threads);
+
+    //////////////////////////////////////////////////////////////////
+    /// Do parallel (partitioned) inserts into thread-local tables
+    //////////////////////////////////////////////////////////////////
+    {
+      auto fn = [&num_threads, &num_groups, &ctx](uint64_t tid) {
+        // First, initialize thread-local table
+        auto *table =
+            ctx.GetThreadStates().AccessThreadStateAs<codegen::util::HashTable>(
+                tid);
+        codegen::util::HashTable::Init(*table, ctx, sizeof(Key), sizeof(Value));
+
+        // Insert
+        for (uint32_t i = 0; i < num_keys / num_threads; i++) {
+          Key group_key = {i % num_groups, i % num_groups};
+          table->TypedUpsert<true, Key, Value>(
+              group_key.Hash(), group_key, [](bool exists, Value *curr) {
+                PartitionedUpdateFunction(exists, curr);
+              });
+        }
+      };
+
+      // Launch thread-local population in parallel
+      LaunchParallelTest(num_threads, fn);
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Transfer partitions to global table
+    //////////////////////////////////////////////////////////////////
+    {
+      auto merge_fn = [](codegen::util::HashTable &table,
+                         codegen::util::HashTable::Entry **partitions,
+                         uint64_t part_begin, uint64_t part_end) {
+        (void)table;
+        for (uint64_t pid = part_begin; pid < part_end; pid++) {
+          auto *entry = partitions[pid];
+          while (entry != nullptr) {
+          }
+        }
+      };
+
+      // The "0" is for the offset of the hash table in the state. It's 0
+      // because it's the only element in the state and it's situated in the
+      // first slot.
+      global_table.TransferPartitions(ctx.GetThreadStates(), 0, merge_fn);
+    }
+
+    //////////////////////////////////////////////////////////////////
+    /// Final scan to check results
+    //////////////////////////////////////////////////////////////////
+    {
+      std::mutex mutex;
+      auto scan_fn = [](void *query_state, void *thread_state,
+                        const codegen::util::HashTable &table) {
+        (void)thread_state;
+        (void)table;
+        std::mutex *m = reinterpret_cast<std::mutex *>(query_state);
+        (void)m;
+
+      };
+      global_table.ExecutePartitionedScan(static_cast<void *>(&mutex),
+                                          ctx.GetThreadStates(), scan_fn);
+    }
+  }
+}
+#endif
 
 }  // namespace test
 }  // namespace peloton
