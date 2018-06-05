@@ -17,7 +17,15 @@
 namespace peloton {
 namespace codegen {
 
-// We need to manually define the type because it is recursive
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Entry
+///
+////////////////////////////////////////////////////////////////////////////////
+
+// NOTE: We need to manually define the util::HashTable::Entry type because it
+// is recursive.
+
 llvm::Type *EntryProxy::GetType(CodeGen &codegen) {
   static const std::string kHashEntryTypeName = "peloton::Entry";
 
@@ -40,6 +48,25 @@ llvm::Type *EntryProxy::GetType(CodeGen &codegen) {
 }
 DEFINE_MEMBER(dummy, Entry, hash);
 DEFINE_MEMBER(dummy, Entry, next);
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Scan State
+///
+////////////////////////////////////////////////////////////////////////////////
+
+DEFINE_TYPE(ScanState, "peloton::HashTable::ScanState", table, sel, entries,
+            index, next, size, sel_size, done);
+
+DEFINE_METHOD(peloton::codegen::util::HashTable, ScanState, Init);
+DEFINE_METHOD(peloton::codegen::util::HashTable, ScanState, Destroy);
+DEFINE_METHOD(peloton::codegen::util::HashTable, ScanState, Next);
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Hash Table
+///
+////////////////////////////////////////////////////////////////////////////////
 
 DEFINE_TYPE(HashTable, "peloton::HashTable", opaque_1, directory, size, mask,
             opaque_2);

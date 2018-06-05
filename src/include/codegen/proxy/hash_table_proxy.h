@@ -63,9 +63,26 @@ PROXY(HashTable) {
   DECLARE_METHOD(Destroy);
 };
 
+PROXY(ScanState) {
+  DECLARE_MEMBER(0, util::HashTable &, table);
+  DECLARE_MEMBER(1, uint32_t *, sel);
+  DECLARE_MEMBER(2, util::HashTable::Entry **, entries);
+  DECLARE_MEMBER(3, uint64_t, index);
+  DECLARE_MEMBER(4, util::HashTable::Entry *, next);
+  DECLARE_MEMBER(5, uint32_t, size);
+  DECLARE_MEMBER(6, uint32_t, sel_size);
+  DECLARE_MEMBER(7, bool, done);
+  DECLARE_TYPE;
+
+  DECLARE_METHOD(Init);
+  DECLARE_METHOD(Destroy);
+  DECLARE_METHOD(Next);
+};
+
 /// The type builders for Entry and HashTable
 TYPE_BUILDER(Entry, util::HashTable::Entry);
 TYPE_BUILDER(HashTable, util::HashTable);
+TYPE_BUILDER(ScanState, util::HashTable::ScanState);
 
 }  // namespace codegen
 }  // namespace peloton

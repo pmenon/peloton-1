@@ -242,14 +242,92 @@ class HashTable {
 
   //////////////////////////////////////////////////////////////////////////////
   ///
+  /// Scanning
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  /**
+   * Scanner iterator interface. Mostly used from codegen.
+   */
+  class ScanState {
+   public:
+    explicit ScanState(const HashTable &table, uint32_t *sel,
+                       uint32_t sel_size);
+
+    ~ScanState();
+
+    /**
+     * Initialize the provide scan state. This is a static method used from
+     * codegen to initialize a pre-allocated scan state instance.
+     *
+     * @param scan_state The scan state we're initializing
+     * @param table The hash table we're scanning over
+     * @param sel A selection vector determining which (subset) of elements are
+     * valid in the entries view.
+     * @param sel_size The size of the selection vector
+     *
+     * @return True if there is data to scan. False otherwise.
+     */
+    static bool Init(ScanState &scan_state, const HashTable &table,
+                     uint32_t *sel, uint32_t sel_size);
+
+    /**
+     * Clean up all resources allocated by the provided scan state. This is a
+     * static method used from codegen to invoke the destructor of the scanner.
+     *
+     * @param scan_state The scanner we wish to clean up.
+     */
+    static void Destroy(ScanState &scan_state);
+
+    /**
+     * Move the scanner to the next batch of valid entries in the hash table.
+     *
+     * @return True if there is data to scan. False otherwise.
+     */
+    bool Next();
+
+   private:
+    // The hash table we're scanning
+    const HashTable &table_;
+
+    // The selection vector
+    uint32_t *sel_;
+
+    // The entries view where to temporarily cache valid hash table entries
+    Entry **entries_;
+
+    // The next index from the hash table directory to read
+    uint64_t index_;
+
+    // The next position in the active bucket we're reading from
+    Entry *next_;
+
+    // The number of valid elements in the scanner
+    uint32_t size_;
+
+    // The size of the selection vector
+    uint32_t sel_size_;
+
+    // A boolean indicating if there is more data to read
+    bool done_;
+  };
+
+  friend class ScanState;
+
+  //////////////////////////////////////////////////////////////////////////////
+  ///
   /// Accessors
   ///
   //////////////////////////////////////////////////////////////////////////////
 
   uint64_t NumElements() const { return num_elems_; }
+
   uint64_t Capacity() const { return capacity_; }
+
   double LoadFactor() const { return num_elems_ / 1.0 / directory_size_; }
+
   uint64_t FlushThreshold() const { return flush_threshold_; }
+
   uint64_t NumFlushes() const { return stats_.num_flushes; }
 
   //////////////////////////////////////////////////////////////////////////////
@@ -356,6 +434,20 @@ class HashTable {
   };
 
  private:
+  /**
+   * Access the memory pool used by this hash table for all allocations.
+   *
+   * @return The memory pool
+   */
+  ::peloton::type::AbstractPool &GetPool() const { return memory_; }
+
+  /**
+   * Return the current directory size.
+   *
+   * @return
+   */
+  uint64_t DirectorySize() const { return directory_size_; }
+
   /**
    * Determines if this hash table has to be resized.
    *
@@ -466,8 +558,9 @@ void HashTable::TypedInsertLazy(uint64_t hash, const Key &key,
 }
 
 template <bool Partitioned, typename Key, typename Value>
-void HashTable::TypedUpsert(uint64_t hash, const Key &key,
-                            const std::function<void(bool, Value *)> &update_func) {
+void HashTable::TypedUpsert(
+    uint64_t hash, const Key &key,
+    const std::function<void(bool, Value *)> &update_func) {
   // Lookup
   auto *entry = directory_[hash & directory_mask_];
 
@@ -486,8 +579,9 @@ void HashTable::TypedUpsert(uint64_t hash, const Key &key,
 }
 
 template <typename Key, typename Value>
-bool HashTable::TypedProbe(uint64_t hash, const Key &key,
-                           const std::function<void(const Value &)> &consumer_func) {
+bool HashTable::TypedProbe(
+    uint64_t hash, const Key &key,
+    const std::function<void(const Value &)> &consumer_func) {
   // Initial index in the directory
   uint64_t index = hash & directory_mask_;
 

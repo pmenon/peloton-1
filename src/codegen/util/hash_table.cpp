@@ -12,6 +12,8 @@
 
 #include "codegen/util/hash_table.h"
 
+#include <numeric>
+
 #include "common/platform.h"
 #include "common/synchronization/count_down_latch.h"
 #include "threadpool/mono_queue_pool.h"
@@ -509,6 +511,76 @@ void HashTable::TransferMemoryBlocks(HashTable &target) {
   block_ = nullptr;
   num_elems_ = 0;
   capacity_ = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Scan State
+///
+////////////////////////////////////////////////////////////////////////////////
+
+HashTable::ScanState::ScanState(const HashTable &table, uint32_t *sel,
+                                uint32_t sel_size)
+    : table_(table),
+      sel_(sel),
+      index_(1),
+      next_(table_.directory_[0]),
+      size_(0),
+      sel_size_(sel_size),
+      done_(table.NumElements() == 0) {
+  // Allocate space
+  entries_ = static_cast<Entry **>(
+      table_.GetPool().Allocate(sel_size_ * sizeof(Entry *)));
+
+  // Fill selection vector once since we only populate the entries vector with
+  // valid entries
+  std::iota(sel_, sel_ + sel_size_, 0);
+
+  // Move scanner
+  Next();
+}
+
+HashTable::ScanState::~ScanState() {
+  if (entries_ != nullptr) {
+    table_.GetPool().Free(entries_);
+    entries_ = nullptr;
+  }
+}
+
+bool HashTable::ScanState::Init(HashTable::ScanState &scan_state,
+                                const HashTable &table, uint32_t *sel,
+                                uint32_t sel_size) {
+  new (&scan_state) ScanState(table, sel, sel_size);
+  return scan_state.done_;
+}
+
+void HashTable::ScanState::Destroy(HashTable::ScanState &scan_state) {
+  scan_state.~ScanState();
+}
+
+bool HashTable::ScanState::Next() {
+  // Reset number of active elements
+  size_ = 0;
+
+  // Scan the directory, filling up to 'sel_size_' entries into the entries view
+  for (; index_ < table_.DirectorySize() && size_ < sel_size_; index_++) {
+    while (next_ != nullptr) {
+      entries_[size_++] = next_;
+      next_ = next_->next;
+
+      if (size_ > sel_size_) {
+        goto done;
+      }
+    }
+    next_ = table_.directory_[index_];
+  }
+
+done:
+
+  // Are we done scanning?
+  done_ = (size_ == 0);
+
+  return done_;
 }
 
 }  // namespace util
