@@ -74,7 +74,7 @@ class HashTableTest : public PelotonTest {
   std::unique_ptr<::peloton::type::AbstractPool> pool_;
 };
 
-TEST_F(HashTableTest, CanInsertUniqueKeys) {
+TEST_F(HashTableTest, UniqueKeysTest) {
   codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
   constexpr uint32_t to_insert = 50000;
@@ -135,7 +135,7 @@ TEST_F(HashTableTest, BuildEmptyHashTable) {
   }
 }
 
-TEST_F(HashTableTest, CanInsertDuplicateKeys) {
+TEST_F(HashTableTest, DuplicateKeysTest) {
   codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
   constexpr uint32_t to_insert = 50000;
@@ -178,7 +178,7 @@ TEST_F(HashTableTest, CanInsertDuplicateKeys) {
   }
 }
 
-TEST_F(HashTableTest, CanInsertLazilyWithDups) {
+TEST_F(HashTableTest, LazyInsertsWithDupsTest) {
   codegen::util::HashTable table{GetMemPool(), sizeof(Key), sizeof(Value)};
 
   constexpr uint32_t to_insert = 50000;
@@ -226,7 +226,106 @@ TEST_F(HashTableTest, CanInsertLazilyWithDups) {
   }
 }
 
-TEST_F(HashTableTest, ParallelMerge) {
+TEST_F(HashTableTest, VectorizedScanTest) {
+  ////////////////////////////////////////////////////////////////////
+  ///
+  /// First, a normal test. Insert a bunch of keys, iterate and ensure
+  /// everything exists.
+  ///
+  ////////////////////////////////////////////////////////////////////
+  {
+    codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
+
+    const uint32_t num_keys = 100000;
+
+    struct KeyHasher {
+      size_t operator()(const Key &k) const { return k.Hash(); }
+    };
+    std::unordered_map<Key, Value, KeyHasher> ref_map;
+
+    for (uint32_t i = 0; i < num_keys; i++) {
+      Key k(i, 0);
+      Value v = {0, 1, 2, 3};
+      table.TypedInsert(k.Hash(), k, v);
+      ref_map.insert(std::make_pair(k, v));
+    }
+
+    constexpr uint32_t vec_size = 1024;
+    uint32_t selection_vector[vec_size] = {0};
+    codegen::util::HashTable::ScanState scan(table, selection_vector, vec_size);
+
+    uint32_t entry_count = 0;
+    do {
+      auto *entries = scan.Entries();
+      for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
+        const Key *k;
+        const Value *v;
+        entries[i]->GetKV(k, v);
+
+        // Check in reference map
+        auto iter = ref_map.find(*k);
+        EXPECT_FALSE(iter == ref_map.end());
+        EXPECT_EQ(iter->second, *v);
+        entry_count++;
+      }
+    } while (!scan.Next());
+
+    // Make sure the counts are the same
+    EXPECT_EQ(num_keys, entry_count);
+  }
+
+  ////////////////////////////////////////////////////////////////////
+  ///
+  /// In this sub-test, we want to test that the iteration can correctly
+  /// straddle between buckets. To do this, we construct a table such
+  /// each bucket chain has a size 1/4 of the desired vector size. Each
+  /// invocation of Next() will require moving between four buckets.
+  ///
+  ////////////////////////////////////////////////////////////////////
+  {
+    codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
+
+    constexpr uint32_t vec_size = 512;
+
+    constexpr uint32_t num_buckets_to_insert_into = 32;
+
+    struct KeyHasher {
+      size_t operator()(const Key &k) const { return k.Hash(); }
+    };
+    std::unordered_map<Key, Value, KeyHasher> ref_map;
+
+    uint32_t num_keys = 0;
+    for (uint32_t bucket = 0; bucket < num_buckets_to_insert_into; bucket++) {
+      for (uint32_t i = 0; i < vec_size / 4; i++) {
+        Key k(bucket, 0);
+        Value v = {0, 1, 2, 3};
+        table.TypedInsert(k.Hash(), k, v);
+        num_keys++;
+      }
+    }
+
+    EXPECT_EQ(num_keys, table.NumElements());
+
+    uint32_t selection_vector[vec_size] = {0};
+    codegen::util::HashTable::ScanState scan(table, selection_vector, vec_size);
+
+    uint32_t entry_count = 0;
+    do {
+      auto *entries = scan.Entries();
+      for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
+        const Key *k;
+        const Value *v;
+        entries[i]->GetKV(k, v);
+        entry_count++;
+      }
+    } while (!scan.Next());
+
+    // Make sure the counts are the same
+    EXPECT_EQ(num_keys, entry_count);
+  }
+}
+
+TEST_F(HashTableTest, ParallelMergeTest) {
   constexpr uint32_t num_threads = 4;
   constexpr uint32_t to_insert = 20000;
 
@@ -348,7 +447,7 @@ void PartitionedUpdateFunction(bool exists, Value *curr_val) {
 
 }  // namespace
 
-TEST_F(HashTableTest, CanInsertPartitioned) {
+TEST_F(HashTableTest, InsertPartitionedTest) {
   codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
   const uint32_t num_groups = static_cast<uint32_t>(table.FlushThreshold() + 9);

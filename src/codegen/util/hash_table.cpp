@@ -122,7 +122,7 @@ void HashTable::Destroy(HashTable &table) { table.~HashTable(); }
 
 char *HashTable::Insert(uint64_t hash) {
   // Resize the hash table if needed
-  if (NeedsResize()) {
+  if (NeedsToGrow()) {
     Grow();
   }
 
@@ -527,10 +527,10 @@ HashTable::ScanState::ScanState(const HashTable &table, uint32_t *sel,
       next_(table_.directory_[0]),
       size_(0),
       sel_size_(sel_size),
-      done_(table.NumElements() == 0) {
+      done_(table_.num_elems_ == 0) {
   // Allocate space
   entries_ = static_cast<Entry **>(
-      table_.GetPool().Allocate(sel_size_ * sizeof(Entry *)));
+      table_.memory_.Allocate(sel_size_ * sizeof(Entry *)));
 
   // Fill selection vector once since we only populate the entries vector with
   // valid entries
@@ -542,7 +542,7 @@ HashTable::ScanState::ScanState(const HashTable &table, uint32_t *sel,
 
 HashTable::ScanState::~ScanState() {
   if (entries_ != nullptr) {
-    table_.GetPool().Free(entries_);
+    table_.memory_.Free(entries_);
     entries_ = nullptr;
   }
 }
@@ -562,20 +562,27 @@ bool HashTable::ScanState::Next() {
   // Reset number of active elements
   size_ = 0;
 
-  // Scan the directory, filling up to 'sel_size_' entries into the entries view
-  for (; index_ < table_.DirectorySize() && size_ < sel_size_; index_++) {
-    while (next_ != nullptr) {
+  while (true) {
+    // While we're in the middle of a bucket chain and we have room to insert
+    // new entries, continue along the bucket chain.
+    while (next_ != nullptr && size_ < sel_size_) {
       entries_[size_++] = next_;
       next_ = next_->next;
-
-      if (size_ > sel_size_) {
-        goto done;
-      }
     }
-    next_ = table_.directory_[index_];
-  }
 
-done:
+    // If we've filled up the entries buffer, drop out
+    if (size_ == sel_size_) {
+      break;
+    }
+
+    // If we've exhausted the hash table, drop out
+    if (index_ == table_.directory_size_) {
+      break;
+    }
+
+    // Move to next bucket
+    next_ = table_.directory_[index_++];
+  }
 
   // Are we done scanning?
   done_ = (size_ == 0);

@@ -286,6 +286,19 @@ class HashTable {
      */
     bool Next();
 
+    /**
+     * Return the current batch of entries
+     *
+     * @return
+     */
+    const Entry *const *Entries() const { return entries_; }
+
+    /**
+     *
+     * @return
+     */
+    uint32_t CurrentBatchSize() const { return size_; }
+
    private:
     // The hash table we're scanning
     const HashTable &table_;
@@ -409,6 +422,12 @@ class HashTable {
     static uint32_t Size(uint32_t key_size, uint32_t value_size) {
       return sizeof(Entry) + key_size + value_size;
     }
+
+    template <typename Key, typename Value>
+    void GetKV(const Key *&k, const Value *&v) const {
+      k = reinterpret_cast<const Key *>(data);
+      v = reinterpret_cast<const Value *>(data + sizeof(Key));
+    };
   };
 
   /**
@@ -435,25 +454,11 @@ class HashTable {
 
  private:
   /**
-   * Access the memory pool used by this hash table for all allocations.
-   *
-   * @return The memory pool
-   */
-  ::peloton::type::AbstractPool &GetPool() const { return memory_; }
-
-  /**
-   * Return the current directory size.
-   *
-   * @return
-   */
-  uint64_t DirectorySize() const { return directory_size_; }
-
-  /**
    * Determines if this hash table has to be resized.
    *
    * @return True if the hash table should grow
    */
-  bool NeedsResize() const { return num_elems_ == capacity_; }
+  bool NeedsToGrow() const { return num_elems_ == capacity_; }
 
   /**
    * Resize the hash table
@@ -495,8 +500,10 @@ class HashTable {
                                          uint32_t partition_id);
 
   /**
+   * Reserve room in this hash table for at least the provided number of
+   * elements, targeting a 50% factor.
    *
-   * @param num_elems
+   * @param num_elems The number of elements to size the table for
    */
   void Reserve(uint32_t num_elems);
 
