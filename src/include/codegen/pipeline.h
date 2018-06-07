@@ -185,6 +185,8 @@ class Pipeline {
 
   bool IsParallel() const { return parallelism_ == Parallelism::Parallel; }
 
+  bool IsSerial() const { return !IsParallel(); }
+
   void RunSerial(const std::function<void(ConsumerContext &)> &body);
 
   void RunParallel(
