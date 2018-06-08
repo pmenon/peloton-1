@@ -565,29 +565,33 @@ void HashGroupByTranslator::Consume(ConsumerContext &context,
 #endif
 }
 
-// Consume the tuples from the context, grouping them into the hash table
+/*
+ * In this function, we take in an input row and update the group in our
+ * aggregation hash table.
+ */
 void HashGroupByTranslator::Consume(ConsumerContext &ctx,
                                     RowBatch::Row &row) const {
-  // The codegen instance
-  CodeGen &codegen = GetCodeGen();
+  /*
+   * First, collect the grouping keys we use to probe the aggregation hash table
+   */
 
-  // The plan node
-  const auto &plan = GetPlanAs<planner::AggregatePlan>();
-
-  // Collect the grouping keys
   std::vector<codegen::Value> key;
   CollectHashKeys(row, key);
 
-  // Collect the attributes that make up the values we aggregate
+  /*
+   * Now collect attributes needed to update the aggregates in the hash table
+   */
+
   std::vector<codegen::Value> vals;
+
+  auto &codegen = GetCodeGen();
+  const auto &plan = GetPlanAs<planner::AggregatePlan>();
   for (const auto &agg_term : plan.GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
-      // The aggregation relies on an expression, evaluate the expression on the
-      // row
       vals.push_back(row.DeriveValue(codegen, *agg_term.expression));
     } else {
       // The aggregation does not rely on an attribute nor an expression. Insert
-      // something empty since this is probably a COUNT(*)
+      // an empty value since this is probably a COUNT(*)
       vals.emplace_back();
     }
   }
@@ -599,15 +603,37 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
     hash = hash_val.GetValue();
   }
 
-  // Perform the insertion into the hash table
-  auto insert_mode = ctx.GetPipeline().IsParallel()
-                         ? HashTable::InsertMode::Partitioned
-                         : HashTable::InsertMode::Normal;
+  /*
+   * We now have the grouping key and values needed to update the hash table.
+   * But, the hash table we update depends on whether the aggregation is
+   * parallelized or not. If in parallel, we update a thread-local table;
+   * otherwise, we use a global hash table registered in the query state.
+   *
+   * Similarly, the insertion method we use for new groups depends on the
+   * parallelization strategy chosen for the aggregation. If parallel, we insert
+   * using a partitioned technique, and a "normal" insertion mode for serial
+   * pipelines.
+   */
 
-  llvm::Value *ht = LoadStatePtr(hash_table_id_);
+  HashTable::InsertMode mode;
+  llvm::Value *table_ptr = nullptr;
+
+  if (ctx.GetPipeline().IsSerial()) {
+    mode = HashTable::InsertMode::Normal;
+    table_ptr = LoadStatePtr(hash_table_id_);
+  } else {
+    mode = HashTable::InsertMode::Partitioned;
+    table_ptr =
+        ctx.GetPipelineContext()->LoadStatePtr(codegen, tl_hash_table_id_);
+  }
+
+  /*
+   * Finally, update the aggregation hash table!
+   */
+
   ConsumerProbe probe(aggregation_, vals, key);
   ConsumerInsert insert(aggregation_, vals, key);
-  hash_table_.ProbeOrInsert(codegen, ht, hash, key, insert_mode, probe, insert);
+  hash_table_.ProbeOrInsert(codegen, table_ptr, hash, key, mode, probe, insert);
 }
 
 // Cleanup by destroying the aggregation hash-table
