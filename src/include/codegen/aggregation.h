@@ -113,9 +113,6 @@ class Aggregation {
     // aggregation is composed of.
     // The array is fixed-sized to the maximum possible length
     const std::array<uint32_t, kMaxNumComponents> storage_indices;
-
-    // If the aggregate shall produce distinct output
-    bool is_distinct;
   };
 
  private:

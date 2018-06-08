@@ -21,7 +21,6 @@
 namespace peloton {
 namespace codegen {
 
-// Configure/setup the aggregation class to handle the provided aggregate types
 void Aggregation::Setup(
     CodeGen &codegen,
     const std::vector<planner::AggregatePlan::AggTerm> &aggregates,
@@ -42,8 +41,7 @@ void Aggregation::Setup(
         aggregate_infos_.emplace_back(
             AggregateInfo{.aggregate_type = agg_term.aggtype,
                           .source_index = source_idx,
-                          .storage_indices = {{storage_pos}},
-                          .is_distinct = agg_term.distinct});
+                          .storage_indices = {{storage_pos}}});
         break;
       }
       case ExpressionType::AGGREGATE_SUM: {
@@ -62,8 +60,7 @@ void Aggregation::Setup(
         aggregate_infos_.emplace_back(
             AggregateInfo{.aggregate_type = agg_term.aggtype,
                           .source_index = source_idx,
-                          .storage_indices = {{storage_pos}},
-                          .is_distinct = agg_term.distinct});
+                          .storage_indices = {{storage_pos}}});
         break;
       }
       case ExpressionType::AGGREGATE_MIN:
@@ -83,8 +80,7 @@ void Aggregation::Setup(
         aggregate_infos_.emplace_back(
             AggregateInfo{.aggregate_type = agg_term.aggtype,
                           .source_index = source_idx,
-                          .storage_indices = {{storage_pos}},
-                          .is_distinct = agg_term.distinct});
+                          .storage_indices = {{storage_pos}}});
         break;
       }
       case ExpressionType::AGGREGATE_AVG: {
@@ -109,8 +105,7 @@ void Aggregation::Setup(
         aggregate_infos_.emplace_back(AggregateInfo{
             .aggregate_type = agg_term.aggtype,
             .source_index = source_idx,
-            .storage_indices = {{sum_storage_pos, count_storage_pos}},
-            .is_distinct = agg_term.distinct});
+            .storage_indices = {{sum_storage_pos, count_storage_pos}}});
         break;
       }
       default: {
@@ -133,7 +128,6 @@ void Aggregation::CreateInitialGlobalValues(CodeGen &codegen,
   null_bitmap.WriteBack(codegen);
 }
 
-// Create the initial values of all aggregates based on the the provided values
 void Aggregation::CreateInitialValues(
     CodeGen &codegen, llvm::Value *space,
     const std::vector<codegen::Value> &initial) const {
@@ -278,30 +272,29 @@ void Aggregation::DoNullCheck(
     CodeGen &codegen, llvm::Value *space, ExpressionType type,
     uint32_t storage_index, const codegen::Value &update,
     UpdateableStorage::NullBitmap &null_bitmap) const {
-  // This aggregate is NULL-able, we need to check if the update value is
-  // NULL, and whether the current value of the aggregate is NULL.
-
-  // There are two cases we handle:
-  // (1). If neither the update value or the current aggregate value are
-  //      NULL, we simple do the regular aggregation without NULL checking.
-  // (2). If the update value is not NULL, but the current aggregate **is**
-  //      NULL, then we just store this update value as if we're creating it
-  //      for the first time.
-  //
-  // If either the update value or the current aggregate are NULL, we have
-  // nothing to do.
-
-  llvm::Value *update_not_null = update.IsNotNull(codegen);
-  llvm::Value *agg_null = null_bitmap.IsNull(codegen, storage_index);
+  /*
+   * This aggregate is NULL-able, we need to check if the update value is
+   * NULL, and whether the current value of the aggregate is NULL.
+   *
+   * There are two cases we handle:
+   * (1). If neither the update value or the current aggregate value are NULL,
+   *      we simple do the regular aggregation without NULL checking.
+   * (2). If the update value is not NULL, but the current aggregate **is**
+   *      NULL, then we just store this update value as if we're creating it
+   *      for the first time.
+   *
+   * If either the update value or the current aggregate are NULL, we have
+   * nothing to do.
+   */
 
   // Fetch null byte so we can phi-resolve it after all the branches
   llvm::Value *null_byte_snapshot = null_bitmap.ByteFor(codegen, storage_index);
 
-  lang::If valid_update(codegen, update_not_null);
+  lang::If valid_update(codegen, update.IsNotNull(codegen));
   {
-    lang::If agg_is_null(codegen, agg_null);
+    lang::If agg_is_null(codegen, null_bitmap.IsNull(codegen, storage_index));
     {
-      // (2)
+      /* Case (2): update is not NULL, but aggregate is NULL */
       switch (type) {
         case ExpressionType::AGGREGATE_SUM:
         case ExpressionType::AGGREGATE_MIN:
@@ -319,7 +312,7 @@ void Aggregation::DoNullCheck(
     }
     agg_is_null.ElseBlock();
     {
-      // (1)
+      /* Case (1): both update and aggregate are not NULL */
       DoAdvanceValue(codegen, space, type, storage_index, update);
     }
     agg_is_null.EndIf();
@@ -333,14 +326,12 @@ void Aggregation::DoNullCheck(
   null_bitmap.MergeValues(valid_update, null_byte_snapshot);
 }
 
-// Advance each of the aggregates stored in the provided storage space
 void Aggregation::AdvanceValues(
     CodeGen &codegen, llvm::Value *space,
     const std::vector<codegen::Value> &next_vals) const {
   // The null bitmap tracker
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
 
-  // Loop over all aggregates, advancing each
   for (const auto &aggregate_info : aggregate_infos_) {
     const Value &update = next_vals[aggregate_info.source_index];
 
@@ -393,8 +384,6 @@ void Aggregation::AdvanceValues(
   null_bitmap.WriteBack(codegen);
 }
 
-// This function will compute the final values of all aggregates stored in the
-// provided storage space, populating the provided vector with these values.
 void Aggregation::FinalizeValues(
     CodeGen &codegen, llvm::Value *space,
     std::vector<codegen::Value> &final_vals) const {
