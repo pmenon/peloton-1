@@ -68,10 +68,13 @@ class OAHashTable : public HashTable {
                        const std::vector<codegen::Value> &key) const;
 
   // Generate code to handle the insertion of a new tuple
-  void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
+  void ProbeOrInsert(CodeGen &codegen,
+                     llvm::Value *ht_ptr,
+                     llvm::Value *hash,
                      const std::vector<codegen::Value> &key,
-                     HashTable::ProbeCallback &probe_callback,
-                     HashTable::InsertCallback &insert_callback) const override;
+                     InsertMode insert_mode,
+                     ProbeCallback &probe_callback,
+                     InsertCallback &insert_callback) const override;
 
   // Probe the hash table and insert a new slot if needed, returning both the
   // result and the data pointer
@@ -83,6 +86,7 @@ class OAHashTable : public HashTable {
   // about existing entries.
   void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
               const std::vector<codegen::Value> &key,
+              HashTable::InsertMode insert_mode,
               HashTable::InsertCallback &callback) const override;
 
   // Generate code to iterate over the entire hash table

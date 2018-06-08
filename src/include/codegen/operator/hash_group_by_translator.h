@@ -6,16 +6,15 @@
 //
 // Identification: src/include/codegen/operator/hash_group_by_translator.h
 //
-// Copyright (c) 2015-2017, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
 #include "codegen/aggregation.h"
-#include "codegen/oa_hash_table.h"
+#include "codegen/hash_table.h"
 #include "codegen/operator/operator_translator.h"
-#include "codegen/updateable_storage.h"
 
 namespace peloton {
 
@@ -25,9 +24,9 @@ class AggregatePlan;
 
 namespace codegen {
 
-//===----------------------------------------------------------------------===//
-// The translator for a hash-based group-by operator.
-//===----------------------------------------------------------------------===//
+/**
+ * This is the primary translator for hash-based aggregations.
+ */
 class HashGroupByTranslator : public OperatorTranslator {
  public:
   // Global/configurable variable controlling whether hash aggregations prefetch
@@ -41,7 +40,11 @@ class HashGroupByTranslator : public OperatorTranslator {
   void InitializeQueryState() override;
 
   // Define any helper functions this translator needs
-  void DefineAuxiliaryFunctions() override {}
+  void DefineAuxiliaryFunctions() override;
+
+  void RegisterPipelineState(PipelineContext &pipeline_ctx) override;
+  void InitializePipelineState(PipelineContext &pipeline_ctx) override;
+  void TearDownPipelineState(PipelineContext &pipeline_ctx) override;
 
   // The method that produces new tuples
   void Produce() const override;
@@ -54,118 +57,15 @@ class HashGroupByTranslator : public OperatorTranslator {
   void TearDownQueryState() override;
 
  private:
-  //===--------------------------------------------------------------------===//
-  // The callback the group-by uses when iterating the results of the hash table
-  //===--------------------------------------------------------------------===//
-  class ProduceResults : public HashTable::VectorizedIterateCallback {
-   public:
-    // Constructor
-    ProduceResults(ConsumerContext &ctx, const planner::AggregatePlan &plan,
-                   const Aggregation &aggregation);
+  // These helper classes we defined later
+  class AggregateFinalizer;
+  class AggregateAccess;
+  class ConsumerProbe;
+  class ConsumerInsert;
+  class ProduceResults;
+  class ParallelMerge;
 
-    // The callback
-    void ProcessEntries(CodeGen &codegen, llvm::Value *start, llvm::Value *end,
-                        Vector &selection_vector,
-                        HashTable::HashTableAccess &access) const override;
-
-   private:
-    ConsumerContext &ctx_;
-    const planner::AggregatePlan &plan_;
-    const Aggregation &aggregation_;
-  };
-
-  //===--------------------------------------------------------------------===//
-  // The callback used when we probe the hash table when aggregating, but find
-  // an existing value associated with a given key. We, therefore, perform the
-  // actual aggregation ... duh
-  //===--------------------------------------------------------------------===//
-  class ConsumerProbe : public HashTable::ProbeCallback {
-   public:
-    // Constructor
-    ConsumerProbe(CompilationContext &context, const Aggregation &aggregation,
-                  const std::vector<codegen::Value> &next_vals,
-                  const std::vector<codegen::Value> &grouping_keys);
-
-    // The callback
-    void ProcessEntry(CodeGen &codegen, llvm::Value *data_area) const override;
-
-   private:
-    // Compilation Context need for code generation and runtime state
-    CompilationContext &context_;
-    // The guy that handles the computation of the aggregates
-    const Aggregation &aggregation_;
-    // The next value to merge into the existing aggregates
-    const std::vector<codegen::Value> &next_vals_;
-    // The key used for the Group By, will be needed for distinct aggregations
-    const std::vector<codegen::Value> grouping_keys_;
-  };
-
-  //===--------------------------------------------------------------------===//
-  // The callback used when we probe the hash table when aggregating, but do
-  // not find an existing entry. At this point, we insert the values as initial
-  // aggregates.
-  //===--------------------------------------------------------------------===//
-  class ConsumerInsert : public HashTable::InsertCallback {
-   public:
-    // Constructor
-    ConsumerInsert(const Aggregation &aggregation,
-                   const std::vector<codegen::Value> &initial_vals,
-                   const std::vector<codegen::Value> &grouping_keys);
-
-    // StoreValue the initial values of the aggregates into the provided storage
-    void StoreValue(CodeGen &codegen, llvm::Value *data_space) const override;
-
-    llvm::Value *GetValueSize(CodeGen &codegen) const override;
-
-   private:
-    // The guy that handles the computation of the aggregates
-    const Aggregation &aggregation_;
-    // The list of initial values to use as aggregates
-    const std::vector<codegen::Value> &initial_vals_;
-    // The key used for the Group By, will be needed for distinct aggregations
-    const std::vector<codegen::Value> grouping_keys_;
-  };
-
-  //===--------------------------------------------------------------------===//
-  // An aggregate finalizer allows aggregations to delay the finalization of an
-  // aggregate in the hash-table to a later time. This is needed when we do
-  // vectorized scans of the hash-table.
-  //===--------------------------------------------------------------------===//
-  class AggregateFinalizer {
-   public:
-    AggregateFinalizer(const Aggregation &aggregation,
-                       HashTable::HashTableAccess &hash_table_access);
-    // Get the finalized aggregates at the given position in the results
-    const std::vector<codegen::Value> &GetAggregates(CodeGen &codegen,
-                                                     llvm::Value *index);
-
-   private:
-    // The aggregator
-    Aggregation aggregation_;
-    // The hash-table accessor
-    HashTable::HashTableAccess &hash_table_access_;
-    // Whether the aggregate has been finalized and the results
-    bool finalized_;
-    std::vector<codegen::Value> final_aggregates_;
-  };
-
-  //===--------------------------------------------------------------------===//
-  // This class provides (delayed) access to individual attributes of tuples in
-  // the result of the aggregation.
-  //===--------------------------------------------------------------------===//
-  class AggregateAccess : public RowBatch::AttributeAccess {
-   public:
-    AggregateAccess(AggregateFinalizer &finalizer, uint32_t agg_index);
-
-    codegen::Value Access(CodeGen &codegen, RowBatch::Row &row) override;
-
-   private:
-    // The associate finalizer
-    AggregateFinalizer &finalizer_;
-    // The index in the tuple's attributes
-    uint32_t agg_index_;
-  };
-
+ private:
   void CollectHashKeys(RowBatch::Row &row,
                        std::vector<codegen::Value> &key) const;
 
@@ -181,12 +81,16 @@ class HashGroupByTranslator : public OperatorTranslator {
 
   // The ID of the hash-table in the runtime state
   QueryState::Id hash_table_id_;
+  PipelineContext::Id tl_hash_table_id_;
 
   // The hash table
-  OAHashTable hash_table_;
+  HashTable hash_table_;
 
   // The aggregation handler
   Aggregation aggregation_;
+
+  // Hash table merging function, for partitioned aggregations
+  llvm::Function *merging_func_;
 };
 
 }  // namespace codegen

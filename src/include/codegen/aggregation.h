@@ -6,7 +6,7 @@
 //
 // Identification: src/include/codegen/aggregation.h
 //
-// Copyright (c) 2015-2017, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -83,8 +83,20 @@ class Aggregation {
   void FinalizeValues(CodeGen &codegen, llvm::Value *space,
                       std::vector<codegen::Value> &final_vals) const;
 
-  // Get the total number of bytes needed to store all the aggregates this is
-  // configured to store
+  /**
+   *
+   * @param codegen
+   * @param curr_vals
+   * @param new_vals
+   */
+  void MergeValues(CodeGen &codegen, llvm::Value *curr_vals,
+                   llvm::Value *new_vals) const;
+
+  /**
+   * Get the total number of bytes needed to store all aggregate values
+   *
+   * @return Total size, in bytes, of all aggregates
+   */
   uint32_t GetAggregatesStorageSize() const {
     return storage_.GetStorageSize();
   }

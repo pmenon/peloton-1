@@ -106,7 +106,7 @@ class HashJoinTranslator : public OperatorTranslator {
 
   // The ID of the hash-table in the runtime state
   QueryState::Id hash_table_id_;
-  PipelineContext::Id hash_table_tl_id_;
+  PipelineContext::Id tl_hash_table_id_;
 
   // The ID of the bloom filter in the runtime state
   QueryState::Id bloom_filter_id_;

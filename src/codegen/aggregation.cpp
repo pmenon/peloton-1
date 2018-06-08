@@ -14,8 +14,8 @@
 
 #include "codegen/lang/if.h"
 #include "codegen/proxy/oa_hash_table_proxy.h"
-#include "codegen/type/boolean_type.h"
 #include "codegen/type/bigint_type.h"
+#include "codegen/type/boolean_type.h"
 #include "codegen/type/decimal_type.h"
 
 namespace peloton {
@@ -34,7 +34,7 @@ void Aggregation::Setup(
       case ExpressionType::AGGREGATE_COUNT:
       case ExpressionType::AGGREGATE_COUNT_STAR: {
         // Add the count to the storage layout. COUNTs are never NULL-able.
-        const type::Type count_type{type::BigInt::Instance()};
+        const type::Type count_type(type::BigInt::Instance());
         uint32_t storage_pos = storage_.AddType(count_type);
 
         // Add metadata for the aggregate
@@ -199,7 +199,7 @@ void Aggregation::TearDownQueryState(CodeGen &codegen) {
 void Aggregation::CreateInitialGlobalValues(CodeGen &codegen,
                                             llvm::Value *space) const {
   PELOTON_ASSERT(IsGlobal());
-  UpdateableStorage::NullBitmap null_bitmap{codegen, storage_, space};
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
   null_bitmap.InitAllNull(codegen);
   null_bitmap.WriteBack(codegen);
 }
@@ -213,7 +213,7 @@ void Aggregation::CreateInitialValues(
   PELOTON_ASSERT(!IsGlobal());
 
   // The null bitmap tracker
-  UpdateableStorage::NullBitmap null_bitmap{codegen, storage_, space};
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
 
   // Initialize bitmap to all NULLs
   null_bitmap.InitAllNull(codegen);
@@ -270,7 +270,8 @@ void Aggregation::CreateInitialValues(
       // Perform the dummy lookup in the hash table that creates the entry
       llvm::Value *hash = nullptr;
       HashTable::NoOpInsertCallback insert_callback;
-      hash_table.Insert(codegen, state_pointer, hash, key, insert_callback);
+      hash_table.Insert(codegen, state_pointer, hash, key,
+                        HashTable::InsertMode::Normal, insert_callback);
     }
   }
 }
@@ -339,15 +340,14 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
       auto curr = storage_.GetValueSkipNull(codegen, space, storage_index);
 
       // Convert the next update into 0 or 1 depending of if it is NULL
+      codegen::type::Type update_type(type::BigInt::Instance());
       codegen::Value raw_update;
       if (update.IsNullable()) {
         llvm::Value *not_null = update.IsNotNull(codegen);
-        raw_update =
-            codegen::Value{type::BigInt::Instance(),
-                           codegen->CreateZExt(not_null, codegen.Int64Type())};
+        llvm::Value *raw = codegen->CreateZExt(not_null, codegen.Int64Type());
+        raw_update = codegen::Value(update_type, raw);
       } else {
-        raw_update =
-            codegen::Value{type::BigInt::Instance(), codegen.Const64(1)};
+        raw_update = codegen::Value(update_type, codegen.Const64(1));
       }
 
       // Add to aggregate
@@ -356,7 +356,7 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
     }
     case ExpressionType::AGGREGATE_COUNT_STAR: {
       auto curr = storage_.GetValueSkipNull(codegen, space, storage_index);
-      auto delta = codegen::Value{type::BigInt::Instance(), codegen.Const64(1)};
+      auto delta = codegen::Value(type::BigInt::Instance(), codegen.Const64(1));
       next = curr.Add(codegen, delta);
       break;
     }
@@ -365,12 +365,11 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
           "Unexpected aggregate type [%s] when advancing aggregator",
           ExpressionTypeToString(type).c_str());
       LOG_ERROR("%s", message.c_str());
-      throw Exception{ExceptionType::UNKNOWN_TYPE, message};
+      throw Exception(ExceptionType::UNKNOWN_TYPE, message);
     }
   }
 
   // Store the updated value in the appropriate slot
-  PELOTON_ASSERT(next.GetType().type_id != peloton::type::TypeId::INVALID);
   storage_.SetValueSkipNull(codegen, space, storage_index, next);
 }
 
@@ -397,9 +396,9 @@ void Aggregation::DoNullCheck(
   // Fetch null byte so we can phi-resolve it after all the branches
   llvm::Value *null_byte_snapshot = null_bitmap.ByteFor(codegen, storage_index);
 
-  lang::If valid_update{codegen, update_not_null, "Agg.IfValidUpdate"};
+  lang::If valid_update(codegen, update_not_null, "Agg.IfValidUpdate");
   {
-    lang::If agg_is_null{codegen, agg_null, "Agg.IfAggIsNull"};
+    lang::If agg_is_null(codegen, agg_null, "Agg.IfAggIsNull");
     {
       // (2)
       switch (type) {
@@ -410,7 +409,7 @@ void Aggregation::DoNullCheck(
           break;
         }
         case ExpressionType::AGGREGATE_COUNT: {
-          codegen::Value one{type::BigInt::Instance(), codegen.Const64(1)};
+          codegen::Value one(type::BigInt::Instance(), codegen.Const64(1));
           storage_.SetValue(codegen, space, storage_index, one, null_bitmap);
           break;
         }
@@ -635,6 +634,15 @@ void Aggregation::FinalizeValues(
       }
     }
   }
+}
+
+void Aggregation::MergeValues(CodeGen &codegen, llvm::Value *curr_vals,
+                              llvm::Value *new_vals) const {
+  // TODO: Implement me
+  (void)codegen;
+  (void)curr_vals;
+  (void)new_vals;
+  throw NotImplementedException("Merging values not supported yet");
 }
 
 }  // namespace codegen

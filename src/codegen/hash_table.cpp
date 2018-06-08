@@ -17,6 +17,7 @@
 #include "codegen/lang/loop.h"
 #include "codegen/proxy/hash_table_proxy.h"
 #include "common/exception.h"
+#include "type/type_id.h"
 
 namespace peloton {
 namespace codegen {
@@ -48,6 +49,7 @@ void HashTable::Init(CodeGen &codegen, llvm::Value *exec_ctx,
 void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
                               llvm::Value *hash,
                               const std::vector<codegen::Value> &key,
+                              InsertMode insert_mode,
                               ProbeCallback &probe_callback,
                               InsertCallback &insert_callback) const {
   llvm::BasicBlock *cont_bb =
@@ -105,7 +107,22 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
   }
 
   // No entry found, insert a new one
-  llvm::Value *ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
+  llvm::Value *ptr = nullptr;
+  switch (insert_mode) {
+    case InsertMode::Normal: {
+      ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
+      break;
+    }
+    case InsertMode::Partitioned: {
+      ptr = codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
+      break;
+    }
+    default: {
+      throw Exception(
+          "Lazy insertions not supported in ProbeOrInsert. Are you sure you "
+          "know what you're doing?");
+    }
+  };
 
   // (5)
   llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
@@ -127,31 +144,32 @@ HashTable::ProbeResult HashTable::ProbeOrInsert(
 }
 
 void HashTable::Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                       const std::vector<codegen::Value> &key,
-                       InsertCallback &insert_callback) const {
+                       const std::vector<codegen::Value> &keys,
+                       HashTable::InsertMode mode,
+                       HashTable::InsertCallback &callback) const {
   // Calculate the hash
   llvm::Value *hash_val =
-      hash != nullptr ? hash : Hash::HashValues(codegen, key);
+      hash != nullptr ? hash : Hash::HashValues(codegen, keys);
 
-  // Get the total size we need
-  //  llvm::Value *value_size = insert_callback.GetValueSize(codegen);
-  //  llvm::Value *keys_size = codegen.Const32(key_storage_.MaxStorageSize());
-  //  llvm::Value *needed_bytes = codegen->CreateAdd(keys_size, value_size);
-
-  // Invoke HashTable::InsertLazy(...)
-  llvm::Value *ptr =
-      codegen.Call(HashTableProxy::InsertLazy, {ht_ptr, hash_val});
+  llvm::Value *ptr = nullptr;
+  switch (mode) {
+    case HashTable::InsertMode::Normal: {
+      ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
+      break;
+    }
+    case HashTable::InsertMode::Lazy: {
+      ptr = codegen.Call(HashTableProxy::InsertLazy, {ht_ptr, hash_val});
+      break;
+    }
+    case HashTable::InsertMode::Partitioned: {
+      ptr = codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
+      break;
+    }
+  }
 
   // Invoke the callback to let her store the payload
-  llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
-  insert_callback.StoreValue(codegen, data_space_ptr);
-}
-
-void HashTable::InsertLazy(CodeGen &codegen, llvm::Value *ht_ptr,
-                           llvm::Value *hash,
-                           const std::vector<codegen::Value> &keys,
-                           HashTable::InsertCallback &callback) const {
-  Insert(codegen, ht_ptr, hash, keys, callback);
+  llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, keys);
+  callback.StoreValue(codegen, data_space_ptr);
 }
 
 void HashTable::BuildLazy(CodeGen &codegen, llvm::Value *ht_ptr) const {
@@ -168,6 +186,158 @@ void HashTable::ReserveLazy(CodeGen &codegen, llvm::Value *ht_ptr,
 void HashTable::MergeLazyUnfinished(CodeGen &codegen, llvm::Value *global_ht,
                                     llvm::Value *local_ht) const {
   codegen.Call(HashTableProxy::MergeLazyUnfinished, {global_ht, local_ht});
+}
+
+void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                                llvm::Value *partitions,
+                                llvm::Value *part_begin, llvm::Value *part_end,
+                                HashTable::MergeCallback &callback) const {
+  llvm::Type *entry_type = EntryProxy::GetType(codegen);
+
+  llvm::Value *null = codegen.NullPtr(entry_type->getPointerTo());
+
+  /*
+   * This function computes compares the hash values of the two given entries
+   */
+  const auto hash_eq =
+      [](CodeGen &codegen, llvm::Value *entry_1, llvm::Value *entry_2) {
+        llvm::Value *entry_1_hash = codegen.Load(EntryProxy::hash, entry_1);
+        llvm::Value *entry_2_hash = codegen.Load(EntryProxy::hash, entry_2);
+        return codegen->CreateICmpEQ(entry_1_hash, entry_2_hash);
+      };
+
+  /*
+   * This function performs a comparison between two input keys. We also use
+   * two output arguments to return pointers to payloads for each input entry.
+   */
+  const auto &key_storage = key_storage_;
+  const auto key_eq = [&entry_type, &key_storage](
+      CodeGen &codegen, llvm::Value *entry_1, llvm::Value *&entry_1_values,
+      llvm::Value *entry_2, llvm::Value *&entry_2_values) {
+
+    std::vector<codegen::Value> entry_1_keys, entry_2_keys;
+
+    llvm::Value *entry_1_keys_ptr =
+        codegen->CreateConstInBoundsGEP2_32(entry_type, entry_1, 1, 0);
+
+    entry_1_values =
+        key_storage.LoadValues(codegen, entry_1_keys_ptr, entry_1_keys);
+
+    llvm::Value *entry_2_keys_ptr =
+        codegen->CreateConstInBoundsGEP2_32(entry_type, entry_2, 1, 0);
+
+    entry_2_values =
+        key_storage.LoadValues(codegen, entry_2_keys_ptr, entry_2_keys);
+
+    // Perform equality check
+    auto ret =
+        codegen::Value::TestEquality(codegen, entry_1_keys, entry_2_keys);
+    PELOTON_ASSERT(!ret.IsNullable());
+    PELOTON_ASSERT(ret.GetType().type_id == ::peloton::type::TypeId::BOOLEAN);
+
+    // Done
+    return ret.GetValue();
+  };
+
+  const auto link_into_table =
+      [](CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *bucket,
+         llvm::Value *part_entry, llvm::BasicBlock *cont_bb) {
+        (void)codegen;
+        (void)ht_ptr;
+        (void)bucket;
+        (void)part_entry;
+        (void)cont_bb;
+      };
+
+  const auto merge_into_bucket =
+      [&null, &hash_eq, &key_eq, &link_into_table, &callback](
+          CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *bucket_head,
+          llvm::Value *part_entry, llvm::BasicBlock *cont_bb) {
+
+        llvm::Value *hash_entry = bucket_head;
+        llvm::Value *cond = codegen->CreateICmpNE(hash_entry, null);
+        lang::Loop chain_loop(codegen, cond, {{"hashIter", hash_entry}});
+        {
+          lang::If hash_match(codegen,
+                              hash_eq(codegen, hash_entry, part_entry));
+          {
+            llvm::Value *part_entry_values = nullptr,
+                        *hash_entry_values = nullptr;
+            lang::If keys_match(codegen,
+                                key_eq(codegen, hash_entry, hash_entry_values,
+                                       part_entry, part_entry_values));
+            {
+              // Full match
+              callback.MergeValues(codegen, hash_entry_values,
+                                   part_entry_values);
+            }
+            keys_match.EndIf(cont_bb);
+          }
+          hash_match.EndIf();
+
+          hash_entry = codegen.Load(EntryProxy::next, hash_entry);
+          cond = codegen->CreateICmpNE(hash_entry, null);
+          chain_loop.LoopEnd(cond, {hash_entry});
+        }
+
+        /*
+         * part_entry's key doesn't exist in the table. We need to link it in.
+         */
+        link_into_table(codegen, ht_ptr, bucket_head, part_entry, cont_bb);
+      };
+
+  /*
+   * This function merges all entries contained in a given partition into the
+   * provided hash table.
+   */
+  const auto merge_partition = [&null, &merge_into_bucket](
+      CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *directory,
+      llvm::Value *mask, llvm::Value *partition_head) {
+
+    llvm::Value *cond = codegen->CreateICmpNE(partition_head, null);
+    lang::Loop partition_loop(codegen, cond, {{"partIter", partition_head}});
+    {
+      llvm::Value *part_entry = partition_loop.GetLoopVar(0);
+      llvm::Value *next_part_entry = codegen.Load(EntryProxy::next, part_entry);
+
+      // Compute bucket position
+      llvm::Value *part_entry_hash = codegen.Load(EntryProxy::hash, part_entry);
+      llvm::Value *bucket_idx = codegen->CreateAnd(part_entry_hash, mask);
+
+      // Bucket chain head
+      llvm::Value *hash_entry =
+          codegen->CreateInBoundsGEP(directory, {bucket_idx});
+
+      // Now merge the current partition entry into the bucket
+      merge_into_bucket(codegen, ht_ptr, hash_entry, part_entry, nullptr);
+
+      cond = codegen->CreateICmpNE(next_part_entry, null);
+      partition_loop.LoopEnd(cond, {next_part_entry});
+    }
+  };
+
+  // First, pull out the directory and the directory mask since we'll be using
+  // these very often
+  llvm::Value *directory = codegen.Load(HashTableProxy::directory, ht_ptr);
+  llvm::Value *mask = codegen.Load(HashTableProxy::mask, ht_ptr);
+
+  llvm::Value *cond = codegen->CreateICmpULT(part_begin, part_end);
+  lang::Loop range_part_loop(codegen, cond, {{"partIdx", part_begin}});
+  {
+    llvm::Value *part_idx = range_part_loop.GetLoopVar(0);
+
+    // Load the partition head
+    llvm::Value *partition_head =
+        codegen->CreateLoad(codegen->CreateInBoundsGEP(partitions, {part_idx}));
+
+    // Merge this partition into the hash table
+    merge_partition(codegen, ht_ptr, directory, mask, partition_head);
+
+    // Move along
+    part_idx = codegen->CreateAdd(part_idx, codegen.Const64(1));
+    cond = codegen->CreateICmpULT(part_idx, part_end);
+    range_part_loop.LoopEnd(cond, {part_idx});
+  }
 }
 
 void HashTable::Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
@@ -242,10 +412,11 @@ void HashTable::FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
       lang::If key_match(codegen, keys_are_equal.GetValue(), "keyMatch");
       {
         callback.ProcessEntry(codegen, key, data_area);
-        key_match.EndIf();
       }
-      hash_match.EndIf();
+      key_match.EndIf();
     }
+    hash_match.EndIf();
+
     entry = codegen.Load(EntryProxy::next, entry);
     chain_loop.LoopEnd(codegen->CreateICmpNE(entry, null), {entry});
   }
@@ -258,10 +429,8 @@ void HashTable::Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const {
 namespace {
 
 /**
- * This class enables random-access to a (fixed, flattened view) of a hash
- * table. It is used during vectorized iteration over the hash table. Hence,
- * the probed indices always fall within the active vector, usually in the range
- * [0-1024).
+ * This class enables random-access to a fixed, flattened view of a bucket-
+ * chained table. It is used during vectorized iteration over the hash table.
  */
 class TableAccess : public HashTable::HashTableAccess {
  public:

@@ -87,6 +87,17 @@ class HashTable {
   };
 
   /**
+   *
+   */
+  class MergeCallback {
+   public:
+    virtual ~MergeCallback() = default;
+
+    virtual void MergeValues(CodeGen &codegen, llvm::Value *table_values,
+                             llvm::Value *new_values) const = 0;
+  };
+
+  /**
    * A callback used when iterating over the entries in the hash table.
    * ProcessEntry() is invoked for each entry in the table, or only those
    * entries that match a provided key if a search key is provided.
@@ -177,6 +188,8 @@ class HashTable {
     llvm::Value *data_ptr;
   };
 
+  enum class InsertMode { Normal, Lazy, Partitioned };
+
  public:
   // Constructor
   HashTable();
@@ -193,6 +206,7 @@ class HashTable {
   virtual void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
                              llvm::Value *hash,
                              const std::vector<codegen::Value> &key,
+                             InsertMode insert_mode,
                              ProbeCallback &probe_callback,
                              InsertCallback &insert_callback) const;
 
@@ -201,12 +215,8 @@ class HashTable {
       const std::vector<codegen::Value> &key) const;
 
   virtual void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                      const std::vector<codegen::Value> &keys,
+                      const std::vector<codegen::Value> &keys, InsertMode mode,
                       InsertCallback &callback) const;
-
-  void InsertLazy(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                  const std::vector<codegen::Value> &keys,
-                  InsertCallback &callback) const;
 
   void BuildLazy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
@@ -215,6 +225,10 @@ class HashTable {
 
   void MergeLazyUnfinished(CodeGen &codegen, llvm::Value *global_ht,
                            llvm::Value *local_ht) const;
+
+  void MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                       llvm::Value *partitions, llvm::Value *part_begin,
+                       llvm::Value *part_end, MergeCallback &callback) const;
 
   virtual void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
                        IterateCallback &callback) const;
@@ -230,6 +244,7 @@ class HashTable {
   virtual void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
  private:
+  // The size of the payload value store in the hash table
   uint32_t value_size_;
 
   // The storage strategy we use to store the lookup keys inside every HashEntry

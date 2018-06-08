@@ -12,14 +12,14 @@
 
 #include "codegen/oa_hash_table.h"
 
-#include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/CFG.h>
+#include <llvm/IR/Intrinsics.h>
 
 #include "codegen/hash.h"
 #include "codegen/lang/if.h"
 #include "codegen/lang/loop.h"
-#include "codegen/proxy/oa_hash_table_proxy.h"
 #include "codegen/lang/vectorized_loop.h"
+#include "codegen/proxy/oa_hash_table_proxy.h"
 #include "codegen/type/integer_type.h"
 #include "codegen/util/oa_hash_table.h"
 
@@ -269,7 +269,8 @@ OAHashTable::ProbeResult OAHashTable::TranslateProbing(
   llvm::Value *status_neq_zero = IsPtrUnEqualTo(codegen, kv_p, 0UL);
 
   lang::Loop probe_loop{
-      codegen, status_neq_zero,
+      codegen,
+      status_neq_zero,
       {{"probeEntry", entry_ptr}, {"probeIndex", index}, {"probeKvl", kv_p}}};
   {
     entry_ptr = probe_loop.GetLoopVar(0);
@@ -322,7 +323,8 @@ OAHashTable::ProbeResult OAHashTable::TranslateProbing(
             // Start a loop. Since we know at least one value exits, we build
             // a do-while loop.
             lang::Loop value_loop{
-                codegen, codegen.ConstBool(true),
+                codegen,
+                codegen.ConstBool(true),
                 {{"probeCounter", loop_counter}, {"probeDataPtr", data_ptr}}};
             {
               // Loop variables
@@ -480,6 +482,7 @@ void OAHashTable::Init(CodeGen &codegen, llvm::Value *ht_ptr) const {
 void OAHashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
                                 llvm::Value *hash,
                                 const std::vector<codegen::Value> &key,
+                                UNUSED_ATTRIBUTE InsertMode insert_mode,
                                 ProbeCallback &probe_callback,
                                 InsertCallback &insert_callback) const {
   auto key_found = [&codegen, &probe_callback](llvm::Value *data_ptr) {
@@ -514,6 +517,7 @@ OAHashTable::ProbeResult OAHashTable::ProbeOrInsert(
 void OAHashTable::Insert(CodeGen &codegen, llvm::Value *ht_ptr,
                          llvm::Value *hash,
                          const std::vector<codegen::Value> &key,
+                         UNUSED_ATTRIBUTE HashTable::InsertMode insert_mode,
                          InsertCallback &insert_callback) const {
   auto key_found = [&codegen, &insert_callback](llvm::Value *data_ptr) {
     insert_callback.StoreValue(codegen, data_ptr);
@@ -552,7 +556,8 @@ void OAHashTable::Iterate(CodeGen &codegen, llvm::Value *hash_table,
 
   // (1) loop var = bucket_index; loop cond = bucket_cond
   lang::Loop bucket_loop{
-      codegen, bucket_cond,
+      codegen,
+      bucket_cond,
       {{"iterateEntryIndex", entry_index}, {"iterateEntryPtr", entry_ptr}}};
   {
     entry_index = bucket_loop.GetLoopVar(0);

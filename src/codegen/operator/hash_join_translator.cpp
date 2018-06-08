@@ -365,14 +365,15 @@ void HashJoinTranslator::ConsumeFromLeft(ConsumerContext &ctx,
 
   llvm::Value *ht_ptr = nullptr;
   if (ctx.GetPipeline().IsParallel()) {
-    ht_ptr = ctx.GetPipelineContext()->LoadStatePtr(codegen, hash_table_tl_id_);
+    ht_ptr = ctx.GetPipelineContext()->LoadStatePtr(codegen, tl_hash_table_id_);
   } else {
     ht_ptr = LoadStatePtr(hash_table_id_);
   }
 
   // Insert tuples from the left side into the hash table
-  InsertLeft insert_left{left_value_storage_, vals};
-  hash_table_.InsertLazy(codegen, ht_ptr, hash, key, insert_left);
+  InsertLeft insert_left(left_value_storage_, vals);
+  hash_table_.Insert(codegen, ht_ptr, hash, key, HashTable::InsertMode::Lazy,
+                     insert_left);
 
   // Update bloom filter, if enabled
   if (GetJoinPlan().IsBloomFilterEnabled()) {
@@ -382,7 +383,7 @@ void HashJoinTranslator::ConsumeFromLeft(ConsumerContext &ctx,
 
 void HashJoinTranslator::RegisterPipelineState(PipelineContext &pipeline_ctx) {
   if (pipeline_ctx.IsParallel() && IsLeftPipeline(pipeline_ctx.GetPipeline())) {
-    hash_table_tl_id_ = pipeline_ctx.RegisterState(
+    tl_hash_table_id_ = pipeline_ctx.RegisterState(
         "localHT", HashTableProxy::GetType(GetCodeGen()));
   }
 }
@@ -392,7 +393,7 @@ void HashJoinTranslator::InitializePipelineState(
   if (pipeline_ctx.IsParallel() && IsLeftPipeline(pipeline_ctx.GetPipeline())) {
     CodeGen &codegen = GetCodeGen();
     hash_table_.Init(codegen, GetExecutorContextPtr(),
-                     pipeline_ctx.LoadStatePtr(codegen, hash_table_tl_id_));
+                     pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_));
   }
 }
 
@@ -407,7 +408,7 @@ void HashJoinTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
       // First size the global hash table
       hash_table_.ReserveLazy(
           codegen, global_ht_ptr, GetThreadStatesPtr(),
-          pipeline_ctx.GetEntryOffset(codegen, hash_table_tl_id_));
+          pipeline_ctx.GetEntryOffset(codegen, tl_hash_table_id_));
 
       // Then merge each local table in parallel
       PipelineContext::LoopOverStates loop_states{pipeline_ctx};
@@ -415,7 +416,7 @@ void HashJoinTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
           UNUSED_ATTRIBUTE llvm::Value *thread_state) {
         llvm::Value *global_ht_ptr = LoadStatePtr(hash_table_id_);
         llvm::Value *local_ht_ptr =
-            pipeline_ctx.LoadStatePtr(codegen, hash_table_tl_id_);
+            pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
         hash_table_.MergeLazyUnfinished(codegen, global_ht_ptr, local_ht_ptr);
       });
     }
@@ -425,7 +426,7 @@ void HashJoinTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
 void HashJoinTranslator::TearDownPipelineState(PipelineContext &pipeline_ctx) {
   if (pipeline_ctx.IsParallel() && IsLeftPipeline(pipeline_ctx.GetPipeline())) {
     CodeGen &codegen = GetCodeGen();
-    auto *local_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, hash_table_tl_id_);
+    auto *local_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
     hash_table_.Destroy(codegen, local_ht_ptr);
   }
 }
@@ -442,7 +443,7 @@ void HashJoinTranslator::ConsumeFromRight(ConsumerContext &context,
     llvm::Value *contains = bloom_filter_.Contains(
         GetCodeGen(), LoadStatePtr(bloom_filter_id_), key);
 
-    lang::If is_valid_row{GetCodeGen(), contains};
+    lang::If is_valid_row(GetCodeGen(), contains);
     {
       // For each tuple that passes the bloom filter, probe the hash table
       // to eliminate the false positives.
@@ -567,7 +568,7 @@ void HashJoinTranslator::ProbeRight::ProcessEntry(
   if (predicate != nullptr) {
     // Vectorize of TaaT filter?
     auto valid_row = row_.DeriveValue(codegen, *predicate);
-    lang::If is_valid_row{codegen, valid_row};
+    lang::If is_valid_row(codegen, valid_row);
     {
       // Send row up to the parent
       context_.Consume(row_);

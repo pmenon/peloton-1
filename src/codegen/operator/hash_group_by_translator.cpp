@@ -14,9 +14,10 @@
 
 #include "codegen/compilation_context.h"
 #include "codegen/lang/if.h"
-#include "codegen/proxy/oa_hash_table_proxy.h"
+#include "codegen/lang/loop.h"
 #include "codegen/operator/projection_translator.h"
-#include "codegen/lang/vectorized_loop.h"
+#include "codegen/proxy/hash_table_proxy.h"
+#include "codegen/proxy/oa_hash_table_proxy.h"
 #include "codegen/type/integer_type.h"
 
 namespace peloton {
@@ -24,20 +25,275 @@ namespace codegen {
 
 std::atomic<bool> HashGroupByTranslator::kUsePrefetch{false};
 
-//===----------------------------------------------------------------------===//
-// HASH GROUP BY TRANSLATOR
-//===----------------------------------------------------------------------===//
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Aggregate Finalizer
+///
+////////////////////////////////////////////////////////////////////////////////
 
-// Constructor
+class HashGroupByTranslator::AggregateFinalizer {
+ public:
+  AggregateFinalizer(const Aggregation &aggregation,
+                     HashTable::HashTableAccess &hash_table_access)
+      : aggregation_(aggregation),
+        hash_table_access_(hash_table_access),
+        finalized_(false) {}
+
+  const std::vector<codegen::Value> &GetAggregates(CodeGen &codegen,
+                                                   llvm::Value *index) {
+    if (finalized_) {
+      return final_aggregates_;
+    }
+
+    // Extract keys from bucket
+    hash_table_access_.ExtractBucketKeys(codegen, index, final_aggregates_);
+
+    // Extract aggregate values
+    llvm::Value *data_area = hash_table_access_.BucketValue(codegen, index);
+    aggregation_.FinalizeValues(codegen, data_area, final_aggregates_);
+
+    finalized_ = true;
+
+    return final_aggregates_;
+  }
+
+ private:
+  // The aggregator
+  const Aggregation &aggregation_;
+  // The hash-table accessor
+  HashTable::HashTableAccess &hash_table_access_;
+  // Whether the aggregate has been finalized and the results
+  bool finalized_;
+  std::vector<codegen::Value> final_aggregates_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Aggregate Access
+///
+////////////////////////////////////////////////////////////////////////////////
+
+class HashGroupByTranslator::AggregateAccess
+    : public RowBatch::AttributeAccess {
+ public:
+  AggregateAccess(AggregateFinalizer &finalizer, uint32_t agg_index)
+      : finalizer_(finalizer), agg_index_(agg_index) {}
+
+  codegen::Value Access(CodeGen &codegen, RowBatch::Row &row) override {
+    auto *pos = row.GetTID(codegen);
+    const auto &final_agg_vals = finalizer_.GetAggregates(codegen, pos);
+    return final_agg_vals[agg_index_];
+  }
+
+ private:
+  // The associate finalizer
+  AggregateFinalizer &finalizer_;
+  // The index in the tuple's attributes
+  uint32_t agg_index_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Consumer Probe Logic
+///
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * This class is the callback issued when we find an existing group in the
+ * aggregation hash table during table building. When called, we advance all the
+ * stored aggregates.
+ */
+class HashGroupByTranslator::ConsumerProbe : public HashTable::ProbeCallback {
+ public:
+  ConsumerProbe(const Aggregation &aggregation,
+                const std::vector<codegen::Value> &next_vals,
+                const std::vector<codegen::Value> &grouping_keys)
+      : aggregation_(aggregation),
+        next_vals_(next_vals),
+        grouping_keys_(grouping_keys) {}
+
+  void ProcessEntry(CodeGen &codegen, llvm::Value *data_area) const override {
+    aggregation_.AdvanceValues(codegen, data_area, next_vals_, grouping_keys_);
+  }
+
+ private:
+  // The guy that handles the computation of the aggregates
+  const Aggregation &aggregation_;
+  // The next value to merge into the existing aggregates
+  const std::vector<codegen::Value> &next_vals_;
+  // The key used for the Group By, will be needed for distinct aggregations
+  const std::vector<codegen::Value> &grouping_keys_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Consumer Insert Logic
+///
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * This class is the callback issued when we do not find an existing group entry
+ * in the aggregation hash table. When called, we insert a new group into the
+ * hash table.
+ */
+class HashGroupByTranslator::ConsumerInsert : public HashTable::InsertCallback {
+ public:
+  ConsumerInsert(const Aggregation &aggregation,
+                 const std::vector<codegen::Value> &initial_vals,
+                 const std::vector<codegen::Value> &grouping_keys)
+      : aggregation_(aggregation),
+        initial_vals_(initial_vals),
+        grouping_keys_(grouping_keys) {}
+
+  void StoreValue(CodeGen &codegen, llvm::Value *space) const override {
+    aggregation_.CreateInitialValues(codegen, space, initial_vals_,
+                                     grouping_keys_);
+  }
+
+  llvm::Value *GetValueSize(CodeGen &codegen) const override {
+    return codegen.Const32(aggregation_.GetAggregatesStorageSize());
+  }
+
+ private:
+  // The guy that handles the computation of the aggregates
+  const Aggregation &aggregation_;
+  // The list of initial values to use as aggregates
+  const std::vector<codegen::Value> &initial_vals_;
+  // The key used for the Group By, will be needed for distinct aggregations
+  const std::vector<codegen::Value> &grouping_keys_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Produce Results Logic
+///
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * This class serves as the callback when iterating over aggregation hash-table.
+ */
+class HashGroupByTranslator::ProduceResults
+    : public HashTable::VectorizedIterateCallback {
+ public:
+  ProduceResults(ConsumerContext &ctx, const planner::AggregatePlan &plan,
+                 const Aggregation &aggregation)
+      : ctx_(ctx), plan_(plan), aggregation_(aggregation) {}
+
+  void ProcessEntries(CodeGen &codegen, llvm::Value *start, llvm::Value *end,
+                      Vector &selection_vector,
+                      HashTable::HashTableAccess &access) const override;
+
+ private:
+  ConsumerContext &ctx_;
+  const planner::AggregatePlan &plan_;
+  const Aggregation &aggregation_;
+};
+
+void HashGroupByTranslator::ProduceResults::ProcessEntries(
+    CodeGen &codegen, llvm::Value *start, llvm::Value *end,
+    Vector &selection_vector, HashTable::HashTableAccess &access) const {
+  // The row batch
+  RowBatch batch(ctx_.GetCompilationContext(), start, end, selection_vector,
+                 true);
+
+  AggregateFinalizer finalizer(aggregation_, access);
+
+  const auto &grouping_ais = plan_.GetGroupbyAIs();
+  const auto &aggregates = plan_.GetUniqueAggTerms();
+
+  std::vector<AggregateAccess> accessors;
+
+  // Add accessors for each grouping key and aggregate value
+  for (uint64_t i = 0; i < grouping_ais.size() + aggregates.size(); i++) {
+    accessors.emplace_back(finalizer, i);
+  }
+
+  // Register attributes in the row batch
+  for (uint64_t i = 0; i < grouping_ais.size(); i++) {
+    batch.AddAttribute(grouping_ais[i], &accessors[i]);
+  }
+  for (uint64_t i = 0; i < aggregates.size(); i++) {
+    auto &agg_term = aggregates[i];
+    batch.AddAttribute(&agg_term.agg_ai, &accessors[i + grouping_ais.size()]);
+  }
+
+  std::vector<RowBatch::ExpressionAccess> derived_attribute_accessors;
+  const auto *project_info = plan_.GetProjectInfo();
+  if (project_info != nullptr) {
+    ProjectionTranslator::AddNonTrivialAttributes(batch, *project_info,
+                                                  derived_attribute_accessors);
+  }
+
+  // Row batch is set up, send it up
+  auto *predicate = plan_.GetPredicate();
+  if (predicate != nullptr) {
+    // Iterate over the batch, performing a branching predicate check
+    batch.Iterate(codegen, [&](RowBatch::Row &row) {
+      codegen::Value valid_row = row.DeriveValue(codegen, *predicate);
+      lang::If is_valid_row(codegen, valid_row);
+      {
+        // The row is valid, send along the pipeline
+        ctx_.Consume(row);
+      }
+      is_valid_row.EndIf();
+    });
+
+  } else {
+    // There isn't a predicate, just send the entire batch as-is
+    ctx_.Consume(batch);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Parallel Merge
+///
+////////////////////////////////////////////////////////////////////////////////
+
+class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
+ public:
+  ParallelMerge(const Aggregation &aggregation) : aggregation_(aggregation) {}
+
+  void MergeValues(CodeGen &codegen, llvm::Value *table_values,
+                   llvm::Value *new_values) const override {
+    aggregation_.MergeValues(codegen, table_values, new_values);
+  }
+
+ private:
+  const Aggregation &aggregation_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Hash Group By Translator Logic
+///
+////////////////////////////////////////////////////////////////////////////////
+
 HashGroupByTranslator::HashGroupByTranslator(
     const planner::AggregatePlan &group_by, CompilationContext &context,
     Pipeline &pipeline)
     : OperatorTranslator(group_by, context, pipeline),
-      child_pipeline_(this, Pipeline::Parallelism::Serial),
-      aggregation_(context.GetQueryState()) {
-  // If we should be prefetching into the hash-table, install a boundary in the
-  // pipeline at the input into this translator to ensure it receives a vector
-  // of input tuples
+      child_pipeline_(this, Pipeline::Parallelism::Flexible),
+      aggregation_(context.GetQueryState()),
+      merging_func_(nullptr) {
+  // Prepare the input operator to this group by
+  context.Prepare(*group_by.GetChild(0), child_pipeline_);
+
+  /*
+   * Currently, hash-based aggregations are parallelized if and only if the
+   * child pipeline is also parallel.
+   */
+
+  pipeline.MarkSource(this, child_pipeline_.IsParallel()
+                                ? Pipeline::Parallelism::Parallel
+                                : Pipeline::Parallelism::Serial);
+
+  /*
+   * If we should be pre-fetching into the hash-table, install a boundary in the
+   * pipeline at the input into this translator to ensure it receives a vector
+   * of input tuples
+   */
+
   if (UsePrefetching()) {
     child_pipeline_.InstallStageBoundary(this);
   }
@@ -46,10 +302,7 @@ HashGroupByTranslator::HashGroupByTranslator(
   CodeGen &codegen = GetCodeGen();
   QueryState &query_state = context.GetQueryState();
   hash_table_id_ =
-      query_state.RegisterState("groupBy", OAHashTableProxy::GetType(codegen));
-
-  // Prepare the input operator to this group by
-  context.Prepare(*group_by.GetChild(0), child_pipeline_);
+      query_state.RegisterState("groupBy", HashTableProxy::GetType(codegen));
 
   // Prepare the predicate if one exists
   if (group_by.GetPredicate() != nullptr) {
@@ -57,17 +310,14 @@ HashGroupByTranslator::HashGroupByTranslator(
   }
 
   // Prepare the grouping expressions
-  // TODO: We need to handle grouping keys that are expressions (i.e., prepare)
   std::vector<type::Type> key_type;
-  const auto &grouping_ais = group_by.GetGroupbyAIs();
-  for (const auto *grouping_ai : grouping_ais) {
+  for (const auto *grouping_ai : group_by.GetGroupbyAIs()) {
     key_type.push_back(grouping_ai->type);
   }
 
   // Prepare all the aggregation expressions and setup the storage format of
   // values/aggregates in the hash table
-  auto &aggregates = group_by.GetUniqueAggTerms();
-  for (const auto &agg_term : aggregates) {
+  for (const auto &agg_term : group_by.GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
       context.Prepare(*agg_term.expression);
     }
@@ -80,46 +330,156 @@ HashGroupByTranslator::HashGroupByTranslator(
   }
 
   // Setup the aggregation logic for this group by
-  aggregation_.Setup(codegen, aggregates, false, key_type);
+  aggregation_.Setup(codegen, group_by.GetUniqueAggTerms(), false, key_type);
 
   // Create the hash table
-  hash_table_ =
-      OAHashTable{codegen, key_type, aggregation_.GetAggregatesStorageSize()};
+  auto payload_size = aggregation_.GetAggregatesStorageSize();
+  hash_table_ = HashTable(codegen, key_type, payload_size);
 }
 
-// Initialize the hash table instance
 void HashGroupByTranslator::InitializeQueryState() {
-  hash_table_.Init(GetCodeGen(), LoadStatePtr(hash_table_id_));
+  // Initialize the primary aggregation hash table
+  hash_table_.Init(GetCodeGen(), GetExecutorContextPtr(),
+                   LoadStatePtr(hash_table_id_));
+
+  // Let the aggregator initialize anything it needs
   aggregation_.InitializeQueryState(GetCodeGen());
 }
 
-// Produce!
+void HashGroupByTranslator::DefineAuxiliaryFunctions() {
+  if (child_pipeline_.IsSerial()) {
+    return;
+  }
+
+  /*
+   * The child pipeline is parallel. Hence, we need to generate a merging
+   * function to coalesce multiple partitions into a single hash table.
+   */
+
+  auto &codegen = GetCodeGen();
+  auto &query_state = GetCompilationContext().GetQueryState();
+
+  // clang-format off
+  std::vector<FunctionDeclaration::ArgumentInfo> arg_infos = {
+      {"queryState", query_state.GetType()->getPointerTo()},
+      {"hashTable", HashTableProxy::GetType(codegen)->getPointerTo()},
+      {"partitions", EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()},
+      {"partBegin", codegen.Int64Type()},
+      {"partEnd", codegen.Int64Type()}
+  };
+  // clang-format on
+  FunctionDeclaration decl(codegen.GetCodeContext(), "mergePartitions",
+                           FunctionDeclaration::Visibility::Internal,
+                           codegen.VoidType(), arg_infos);
+  FunctionBuilder merge_parts(codegen.GetCodeContext(), decl);
+  {
+    auto *table = merge_parts.GetArgumentByName("hashTable");
+    auto *partitions = merge_parts.GetArgumentByName("partitions");
+    auto *part_begin = merge_parts.GetArgumentByName("partBegin");
+    auto *part_end = merge_parts.GetArgumentByName("partEnd");
+
+    // Do the merge
+    ParallelMerge parallel_merge(aggregation_);
+    hash_table_.MergePartitions(codegen, table, partitions, part_begin,
+                                part_end, parallel_merge);
+
+    merge_parts.ReturnAndFinish();
+  }
+
+  // The merging function
+  merging_func_ = merge_parts.GetFunction();
+}
+
 void HashGroupByTranslator::Produce() const {
-  // Let the left child produce its tuples which we aggregate in our hash-table
+  /*
+   * The first thing we do is let the child produce tuples which we aggregate
+   * in our hash table. In parallel mode, this aggregation happens partially
+   * across a set of thread-local tables.
+   */
+
   GetCompilationContext().Produce(*GetPlan().GetChild(0));
 
-  // Send aggregates up in separate pipeline function
-  auto producer = [this](ConsumerContext &ctx) {
+  /*
+   * We've consumed all tuples from the child plan nodes. We now scan our hash
+   * table and produce tuples which we send to our parent node.
+   *
+   * We use a generic producer function that simply scans over a hash table
+   * instance provided as a function argument. It is agnostic to execution mode.
+   */
+
+  auto producer = [this](ConsumerContext &ctx, llvm::Value *ht) {
     CodeGen &codegen = GetCodeGen();
 
     // The selection vector
     auto *i32_type = codegen.Int32Type();
     auto vec_size = Vector::kDefaultVectorSize.load();
-    auto *raw_vec = codegen.AllocateBuffer(i32_type, vec_size, "hgbSelVector");
-    Vector selection_vec{raw_vec, vec_size, i32_type};
+    auto *raw_vec = codegen.AllocateBuffer(i32_type, vec_size, "gbSelVec");
+    Vector sel_vec(raw_vec, vec_size, i32_type);
 
     // Iterate
     const auto &plan = GetPlanAs<planner::AggregatePlan>();
-    ProduceResults produce_results{ctx, plan, aggregation_};
-    hash_table_.VectorizedIterate(codegen, LoadStatePtr(hash_table_id_),
-                                  selection_vec, produce_results);
+    ProduceResults produce_results(ctx, plan, aggregation_);
+    hash_table_.VectorizedIterate(codegen, ht, sel_vec, produce_results);
   };
 
-  GetPipeline().RunSerial(producer);
+  /* Handle parallel and serial pipelines differently */
+
+  if (GetPipeline().IsSerial()) {
+    /*
+     * This is a serial pipeline. So, we just need to load the global hash table
+     * stored in the query state and scan it. To do so, we invoke the generic
+     * hash table scanning function above using the global hash table.
+     */
+
+    auto serial_producer = [this, &producer](ConsumerContext &ctx) {
+      producer(ctx, LoadStatePtr(hash_table_id_));
+    };
+
+    GetPipeline().RunSerial(serial_producer);
+
+  } else {
+    /*
+     * This is a parallel pipeline, so it's a little more involved.
+     *
+     * At this point, we have a collection of thread-local hash tables that
+     * store partial aggregates. We need to coalesce them into a single
+     * partitioned hash table. To do that:
+     *
+     * 1. We first transfer all thread-local hash table partitions to the
+     * global hash table we allocated earlier in the query state.
+     * 2. Then, we issue a partitioned, parallel scan of the global hash table.
+     */
+
+    CodeGen &codegen = GetCodeGen();
+
+    // 1. Transfer thread-local partitions to global table
+
+    codegen.Call(HashTableProxy::TransferPartitions, {GetThreadStatesPtr()});
+
+    // 2. Setup the call to util::HashTable::ExecutePartitionedScan()
+
+    auto *dispatch_func =
+        HashTableProxy::ExecutePartitionedScan.GetFunction(codegen);
+    std::vector<llvm::Value *> dispatch_args = {merging_func_};
+
+    std::vector<llvm::Type *> pipeline_arg_types = {
+        HashTableProxy::GetType(codegen)};
+
+    auto parallel_producer = [this, &producer](
+        ConsumerContext &ctx, std::vector<llvm::Value *> args) {
+      PELOTON_ASSERT(args.size() == 1);
+      producer(ctx, args[0]);
+    };
+
+    GetPipeline().RunParallel(dispatch_func, dispatch_args, pipeline_arg_types,
+                              parallel_producer);
+  }
 }
 
 void HashGroupByTranslator::Consume(ConsumerContext &context,
                                     RowBatch &batch) const {
+  OperatorTranslator::Consume(context, batch);
+#if 0
   if (!UsePrefetching()) {
     OperatorTranslator::Consume(context, batch);
     return;
@@ -202,24 +562,33 @@ void HashGroupByTranslator::Consume(ConsumerContext &context,
 
   batch.VectorizedIterate(codegen, OAHashTable::kDefaultGroupPrefetchSize,
                           group_prefetch);
+#endif
 }
 
 // Consume the tuples from the context, grouping them into the hash table
-void HashGroupByTranslator::Consume(ConsumerContext &,
+void HashGroupByTranslator::Consume(ConsumerContext &ctx,
                                     RowBatch::Row &row) const {
+  // The codegen instance
   CodeGen &codegen = GetCodeGen();
 
-  // Collect the keys we use to probe the hash table
+  // The plan node
+  const auto &plan = GetPlanAs<planner::AggregatePlan>();
+
+  // Collect the grouping keys
   std::vector<codegen::Value> key;
   CollectHashKeys(row, key);
 
-  // Collect the values of the expressions
-  auto &aggregates = GetPlanAs<planner::AggregatePlan>().GetUniqueAggTerms();
-  std::vector<codegen::Value> vals{aggregates.size()};
-  for (uint32_t i = 0; i < aggregates.size(); i++) {
-    const auto &agg_term = aggregates[i];
+  // Collect the attributes that make up the values we aggregate
+  std::vector<codegen::Value> vals;
+  for (const auto &agg_term : plan.GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
-      vals[i] = row.DeriveValue(codegen, *agg_term.expression);
+      // The aggregation relies on an expression, evaluate the expression on the
+      // row
+      vals.push_back(row.DeriveValue(codegen, *agg_term.expression));
+    } else {
+      // The aggregation does not rely on an attribute nor an expression. Insert
+      // something empty since this is probably a COUNT(*)
+      vals.emplace_back();
     }
   }
 
@@ -231,10 +600,14 @@ void HashGroupByTranslator::Consume(ConsumerContext &,
   }
 
   // Perform the insertion into the hash table
-  llvm::Value *hash_table = LoadStatePtr(hash_table_id_);
-  ConsumerProbe probe{GetCompilationContext(), aggregation_, vals, key};
-  ConsumerInsert insert{aggregation_, vals, key};
-  hash_table_.ProbeOrInsert(codegen, hash_table, hash, key, probe, insert);
+  auto insert_mode = ctx.GetPipeline().IsParallel()
+                         ? HashTable::InsertMode::Partitioned
+                         : HashTable::InsertMode::Normal;
+
+  llvm::Value *ht = LoadStatePtr(hash_table_id_);
+  ConsumerProbe probe(aggregation_, vals, key);
+  ConsumerInsert insert(aggregation_, vals, key);
+  hash_table_.ProbeOrInsert(codegen, ht, hash, key, insert_mode, probe, insert);
 }
 
 // Cleanup by destroying the aggregation hash-table
@@ -264,161 +637,53 @@ void HashGroupByTranslator::CollectHashKeys(
   }
 }
 
-//===----------------------------------------------------------------------===//
-// AGGREGATE FINALIZER
-//===----------------------------------------------------------------------===//
-
-HashGroupByTranslator::AggregateFinalizer::AggregateFinalizer(
-    const Aggregation &aggregation,
-    HashTable::HashTableAccess &hash_table_access)
-    : aggregation_(aggregation),
-      hash_table_access_(hash_table_access),
-      finalized_(false) {}
-
-const std::vector<codegen::Value> &
-HashGroupByTranslator::AggregateFinalizer::GetAggregates(CodeGen &codegen,
-                                                         llvm::Value *index) {
-  if (!finalized_) {
-    // It hasn't been finalized yet, do so now
-
-    // First extract keys from buckets
-    hash_table_access_.ExtractBucketKeys(codegen, index, final_aggregates_);
-
-    // Now extract aggregate values
-    llvm::Value *data_area = hash_table_access_.BucketValue(codegen, index);
-    aggregation_.FinalizeValues(codegen, data_area, final_aggregates_);
-    finalized_ = true;
+void HashGroupByTranslator::RegisterPipelineState(
+    PipelineContext &pipeline_ctx) {
+  if (!pipeline_ctx.IsParallel()) {
+    return;
   }
-  return final_aggregates_;
+
+  /*
+   * In parallel aggregation, we need thread-local hash tables. Allocate one
+   * here in the pipeline context so each thread will get a hash table instance.
+   */
+
+  tl_hash_table_id_ = pipeline_ctx.RegisterState(
+      "groupBy", HashTableProxy::GetType(GetCodeGen()));
 }
 
-//===----------------------------------------------------------------------===//
-// AGGREGATE ACCESS
-//===----------------------------------------------------------------------===//
+void HashGroupByTranslator::InitializePipelineState(
+    PipelineContext &pipeline_ctx) {
+  if (!pipeline_ctx.IsParallel()) {
+    return;
+  }
 
-HashGroupByTranslator::AggregateAccess::AggregateAccess(
-    AggregateFinalizer &finalizer, uint32_t agg_index)
-    : finalizer_(finalizer), agg_index_(agg_index) {}
+  /*
+   * In parallel aggregation, each thread will have a thread-local hash table
+   * instance defined in the thread state. We initialize it here.
+   */
 
-codegen::Value HashGroupByTranslator::AggregateAccess::Access(
-    CodeGen &codegen, RowBatch::Row &row) {
-  auto *pos = row.GetTID(codegen);
-  const auto &final_agg_vals = finalizer_.GetAggregates(codegen, pos);
-  return final_agg_vals[agg_index_];
+  auto &codegen = GetCodeGen();
+
+  auto *tl_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
+  hash_table_.Init(codegen, GetExecutorContextPtr(), tl_ht_ptr);
 }
 
-//===----------------------------------------------------------------------===//
-// PRODUCE RESULTS
-//===----------------------------------------------------------------------===//
-
-HashGroupByTranslator::ProduceResults::ProduceResults(
-    ConsumerContext &ctx, const planner::AggregatePlan &plan,
-    const Aggregation &aggregation)
-    : ctx_(ctx), plan_(plan), aggregation_(aggregation) {}
-
-void HashGroupByTranslator::ProduceResults::ProcessEntries(
-    CodeGen &codegen, llvm::Value *start, llvm::Value *end,
-    Vector &selection_vector, HashTable::HashTableAccess &access) const {
-  RowBatch batch{ctx_.GetCompilationContext(), start, end, selection_vector,
-                 true};
-
-  AggregateFinalizer finalizer{aggregation_, access};
-
-  auto &grouping_ais = plan_.GetGroupbyAIs();
-  auto &aggregates = plan_.GetUniqueAggTerms();
-
-  std::vector<AggregateAccess> accessors;
-
-  // Add accessors for each grouping key and aggregate value
-  for (uint64_t i = 0; i < grouping_ais.size() + aggregates.size(); i++) {
-    accessors.emplace_back(finalizer, i);
+void HashGroupByTranslator::TearDownPipelineState(
+    PipelineContext &pipeline_ctx) {
+  if (!pipeline_ctx.IsParallel()) {
+    return;
   }
 
-  // Register attributes in the row batch
-  for (uint64_t i = 0; i < grouping_ais.size(); i++) {
-    LOG_DEBUG("Adding aggregate key attribute '%s' (%p) to batch",
-              grouping_ais[i]->name.c_str(), grouping_ais[i]);
-    batch.AddAttribute(grouping_ais[i], &accessors[i]);
-  }
-  for (uint64_t i = 0; i < aggregates.size(); i++) {
-    auto &agg_term = aggregates[i];
-    LOG_DEBUG("Adding aggregate attribute '%s' (%p) to batch",
-              agg_term.agg_ai.name.c_str(), &agg_term.agg_ai);
-    batch.AddAttribute(&agg_term.agg_ai, &accessors[i + grouping_ais.size()]);
-  }
+  /*
+   * In parallel aggregation, each thread will have a thread-local hash table
+   * instance defined in the thread state. We destroy it here.
+   */
 
-  std::vector<RowBatch::ExpressionAccess> derived_attribute_accessors;
-  const auto *project_info = plan_.GetProjectInfo();
-  if (project_info != nullptr) {
-    ProjectionTranslator::AddNonTrivialAttributes(batch, *project_info,
-                                                  derived_attribute_accessors);
-  }
+  auto &codegen = GetCodeGen();
 
-  // Row batch is set up, send it up
-  auto *predicate = plan_.GetPredicate();
-  if (predicate != nullptr) {
-    // Iterate over the batch, performing a branching predicate check
-    batch.Iterate(codegen, [&](RowBatch::Row &row) {
-      codegen::Value valid_row = row.DeriveValue(codegen, *predicate);
-      lang::If is_valid_row{codegen, valid_row};
-      {
-        // The row is valid, send along the pipeline
-        ctx_.Consume(row);
-      }
-      is_valid_row.EndIf();
-    });
-
-  } else {
-    // There isn't a predicate, just send the entire batch as-is
-    ctx_.Consume(batch);
-  }
-}
-
-//===----------------------------------------------------------------------===//
-// CONSUMER PROBE
-//===----------------------------------------------------------------------===//
-
-// Constructor
-HashGroupByTranslator::ConsumerProbe::ConsumerProbe(
-    CompilationContext &context, const Aggregation &aggregation,
-    const std::vector<codegen::Value> &next_vals,
-    const std::vector<codegen::Value> &grouping_keys)
-    : context_(context),
-      aggregation_(aggregation),
-      next_vals_(next_vals),
-      grouping_keys_(grouping_keys) {}
-
-// The callback invoked when we probe the hash table with a given key and find
-// an existing value for the key.  In this case, since we're aggregating, we
-// advance all of the aggregates.
-void HashGroupByTranslator::ConsumerProbe::ProcessEntry(
-    CodeGen &codegen, llvm::Value *data_area) const {
-  aggregation_.AdvanceValues(codegen, data_area, next_vals_, grouping_keys_);
-}
-
-//===----------------------------------------------------------------------===//
-// CONSUMER INSERT
-//===----------------------------------------------------------------------===//
-
-HashGroupByTranslator::ConsumerInsert::ConsumerInsert(
-    const Aggregation &aggregation,
-    const std::vector<codegen::Value> &initial_vals,
-    const std::vector<codegen::Value> &grouping_keys)
-    : aggregation_(aggregation),
-      initial_vals_(initial_vals),
-      grouping_keys_(grouping_keys) {}
-
-// Given free storage space in the hash table, store the initial values of all
-// the aggregates
-void HashGroupByTranslator::ConsumerInsert::StoreValue(
-    CodeGen &codegen, llvm::Value *space) const {
-  aggregation_.CreateInitialValues(codegen, space, initial_vals_,
-                                   grouping_keys_);
-}
-
-llvm::Value *HashGroupByTranslator::ConsumerInsert::GetValueSize(
-    CodeGen &codegen) const {
-  return codegen.Const32(aggregation_.GetAggregatesStorageSize());
+  auto *tl_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
+  hash_table_.Destroy(codegen, tl_ht_ptr);
 }
 
 }  // namespace codegen

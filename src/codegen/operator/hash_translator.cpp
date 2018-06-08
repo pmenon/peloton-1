@@ -85,7 +85,8 @@ void HashTranslator::Consume(ConsumerContext &context,
 
   ConsumerProbe probe{};
   ConsumerInsert insert{context, row};
-  hash_table_.ProbeOrInsert(codegen, hash_table, hash, key, probe, insert);
+  hash_table_.ProbeOrInsert(codegen, hash_table, hash, key,
+                            HashTable::InsertMode::Normal, probe, insert);
 }
 
 // Cleanup by destroying the aggregation hash-table
