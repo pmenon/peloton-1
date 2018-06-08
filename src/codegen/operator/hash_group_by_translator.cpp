@@ -15,6 +15,7 @@
 #include "codegen/compilation_context.h"
 #include "codegen/lang/if.h"
 #include "codegen/lang/loop.h"
+#include "codegen/oa_hash_table.h"
 #include "codegen/operator/projection_translator.h"
 #include "codegen/proxy/hash_table_proxy.h"
 #include "codegen/proxy/oa_hash_table_proxy.h"
@@ -106,14 +107,12 @@ class HashGroupByTranslator::AggregateAccess
 class HashGroupByTranslator::ConsumerProbe : public HashTable::ProbeCallback {
  public:
   ConsumerProbe(const Aggregation &aggregation,
-                const std::vector<codegen::Value> &next_vals,
-                const std::vector<codegen::Value> &grouping_keys)
+                const std::vector<codegen::Value> &next_vals)
       : aggregation_(aggregation),
-        next_vals_(next_vals),
-        grouping_keys_(grouping_keys) {}
+        next_vals_(next_vals) {}
 
   void ProcessEntry(CodeGen &codegen, llvm::Value *data_area) const override {
-    aggregation_.AdvanceValues(codegen, data_area, next_vals_, grouping_keys_);
+    aggregation_.AdvanceValues(codegen, data_area, next_vals_);
   }
 
  private:
@@ -121,8 +120,6 @@ class HashGroupByTranslator::ConsumerProbe : public HashTable::ProbeCallback {
   const Aggregation &aggregation_;
   // The next value to merge into the existing aggregates
   const std::vector<codegen::Value> &next_vals_;
-  // The key used for the Group By, will be needed for distinct aggregations
-  const std::vector<codegen::Value> &grouping_keys_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -139,15 +136,12 @@ class HashGroupByTranslator::ConsumerProbe : public HashTable::ProbeCallback {
 class HashGroupByTranslator::ConsumerInsert : public HashTable::InsertCallback {
  public:
   ConsumerInsert(const Aggregation &aggregation,
-                 const std::vector<codegen::Value> &initial_vals,
-                 const std::vector<codegen::Value> &grouping_keys)
+                 const std::vector<codegen::Value> &initial_vals)
       : aggregation_(aggregation),
-        initial_vals_(initial_vals),
-        grouping_keys_(grouping_keys) {}
+        initial_vals_(initial_vals) {}
 
   void StoreValue(CodeGen &codegen, llvm::Value *space) const override {
-    aggregation_.CreateInitialValues(codegen, space, initial_vals_,
-                                     grouping_keys_);
+    aggregation_.CreateInitialValues(codegen, space, initial_vals_);
   }
 
   llvm::Value *GetValueSize(CodeGen &codegen) const override {
@@ -159,8 +153,6 @@ class HashGroupByTranslator::ConsumerInsert : public HashTable::InsertCallback {
   const Aggregation &aggregation_;
   // The list of initial values to use as aggregates
   const std::vector<codegen::Value> &initial_vals_;
-  // The key used for the Group By, will be needed for distinct aggregations
-  const std::vector<codegen::Value> &grouping_keys_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -274,7 +266,6 @@ HashGroupByTranslator::HashGroupByTranslator(
     Pipeline &pipeline)
     : OperatorTranslator(group_by, context, pipeline),
       child_pipeline_(this, Pipeline::Parallelism::Flexible),
-      aggregation_(context.GetQueryState()),
       merging_func_(nullptr) {
   // Prepare the input operator to this group by
   context.Prepare(*group_by.GetChild(0), child_pipeline_);
@@ -330,7 +321,7 @@ HashGroupByTranslator::HashGroupByTranslator(
   }
 
   // Setup the aggregation logic for this group by
-  aggregation_.Setup(codegen, group_by.GetUniqueAggTerms(), false, key_type);
+  aggregation_.Setup(codegen, group_by.GetUniqueAggTerms(), false);
 
   // Create the hash table
   auto payload_size = aggregation_.GetAggregatesStorageSize();
@@ -341,9 +332,6 @@ void HashGroupByTranslator::InitializeQueryState() {
   // Initialize the primary aggregation hash table
   hash_table_.Init(GetCodeGen(), GetExecutorContextPtr(),
                    LoadStatePtr(hash_table_id_));
-
-  // Let the aggregator initialize anything it needs
-  aggregation_.InitializeQueryState(GetCodeGen());
 }
 
 void HashGroupByTranslator::DefineAuxiliaryFunctions() {
@@ -631,15 +619,14 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
    * Finally, update the aggregation hash table!
    */
 
-  ConsumerProbe probe(aggregation_, vals, key);
-  ConsumerInsert insert(aggregation_, vals, key);
+  ConsumerProbe probe(aggregation_, vals);
+  ConsumerInsert insert(aggregation_, vals);
   hash_table_.ProbeOrInsert(codegen, table_ptr, hash, key, mode, probe, insert);
 }
 
 // Cleanup by destroying the aggregation hash-table
 void HashGroupByTranslator::TearDownQueryState() {
   hash_table_.Destroy(GetCodeGen(), LoadStatePtr(hash_table_id_));
-  aggregation_.TearDownQueryState(GetCodeGen());
 }
 
 // Estimate the size of the dynamically constructed hash-table

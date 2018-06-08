@@ -13,6 +13,7 @@
 #include "codegen/operator/global_group_by_translator.h"
 
 #include "codegen/compilation_context.h"
+#include "codegen/vector.h"
 #include "common/logger.h"
 #include "planner/aggregate_plan.h"
 
@@ -23,8 +24,7 @@ GlobalGroupByTranslator::GlobalGroupByTranslator(
     const planner::AggregatePlan &plan, CompilationContext &context,
     Pipeline &pipeline)
     : OperatorTranslator(plan, context, pipeline),
-      child_pipeline_(this, Pipeline::Parallelism::Serial),
-      aggregation_(context.GetQueryState()) {
+      child_pipeline_(this, Pipeline::Parallelism::Serial) {
   LOG_DEBUG("Constructing GlobalGroupByTranslator ...");
 
   CodeGen &codegen = context.GetCodeGen();
@@ -61,7 +61,7 @@ GlobalGroupByTranslator::GlobalGroupByTranslator(
 
 // Initialize the hash table instance
 void GlobalGroupByTranslator::InitializeQueryState() {
-  aggregation_.InitializeQueryState(GetCodeGen());
+
 }
 
 void GlobalGroupByTranslator::Produce() const {
@@ -130,7 +130,7 @@ void GlobalGroupByTranslator::Consume(ConsumerContext &,
 
 // Cleanup by destroying the aggregation hash-table
 void GlobalGroupByTranslator::TearDownQueryState() {
-  aggregation_.TearDownQueryState(GetCodeGen());
+
 }
 
 }  // namespace codegen

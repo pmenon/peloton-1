@@ -16,8 +16,6 @@
 #include <array>
 
 #include "codegen/codegen.h"
-#include "codegen/oa_hash_table.h"
-#include "codegen/query_state.h"
 #include "codegen/updateable_storage.h"
 #include "codegen/value.h"
 #include "planner/aggregate_plan.h"
@@ -39,24 +37,10 @@ namespace codegen {
 //===----------------------------------------------------------------------===//
 class Aggregation {
  public:
-  // Constructor taking the runtime state reference
-  Aggregation(QueryState &query_state) : query_state_(query_state) {}
-
-  // Setup the aggregation to handle the provided aggregates
-  void Setup(CodeGen &codegen,
-             const std::vector<planner::AggregatePlan::AggTerm> &agg_terms,
-             bool is_global, std::vector<type::Type> &grouping_ai_types);
-
   // Setup the aggregation to handle the provided aggregates
   void Setup(CodeGen &codegen,
              const std::vector<planner::AggregatePlan::AggTerm> &agg_terms,
              bool is_global);
-
-  // Codegen any initialization work for the hash tables
-  void InitializeQueryState(CodeGen &codegen);
-
-  // Cleanup by destroying the aggregation hash tables
-  void TearDownQueryState(CodeGen &codegen);
 
   // Create default initial values for all global aggregate components
   void CreateInitialGlobalValues(CodeGen &codegen, llvm::Value *space) const;
@@ -64,14 +48,7 @@ class Aggregation {
   // Store the provided values as the initial values for each of the aggregates
   void CreateInitialValues(
       CodeGen &codegen, llvm::Value *space,
-      const std::vector<codegen::Value> &initial,
-      const std::vector<codegen::Value> &grouping_keys) const;
-
-  // Advance all stored aggregates (stored in the provided storage space) using
-  // the values in the provided vector
-  void AdvanceValues(CodeGen &codegen, llvm::Value *space,
-                     const std::vector<codegen::Value> &next,
-                     const std::vector<codegen::Value> &grouping_keys) const;
+      const std::vector<codegen::Value> &initial) const;
 
   // Advance all stored aggregates (stored in the provided storage space) using
   // the values in the provided vector
@@ -107,24 +84,24 @@ class Aggregation {
  private:
   bool IsGlobal() const { return is_global_; }
 
-  //===--------------------------------------------------------------------===//
-  // Little struct to map higher level aggregates to their physical storage
-  // and to their hash tables if they are distinct.
-  //
-  // Some aggregates decompose into multiple components. For example, AVG()
-  // aggregates decompose into a SUM() and COUNT(). Therefore, the storage
-  // indexes are stored in an array. The array has fixed size of the maximum
-  // number of components that a aggregation is decomposed to, so for now
-  // only 2 for AVG. The aggregations have to know which component is
-  // stored at which index.
-  //
-  // Storing the mapping from the physical position the aggregate is stored to
-  // where the caller expects them allows us to rearrange positions without
-  // the caller knowing or caring.
-  //===--------------------------------------------------------------------===//
-  static const unsigned int kMaxNumComponents = 2;
-
+  /**
+   * This structure maps higher-level aggregates to their physical storage, and
+   * to their hash tables if they are distinct.
+   *
+   * Some aggregates decompose into multiple components. For example, AVG()
+   * aggregates decompose into a SUM() and COUNT(). Therefore, the storage
+   * indexes are stored in an array. The array has fixed size of the maximum
+   * number of components that a aggregation is decomposed to, so for now
+   * only 2 for AVG. The aggregations have to know which component is
+   * stored at which index.
+   *
+   * Storing the mapping from the physical position the aggregate is stored to
+   * where the caller expects them allows us to rearrange positions without
+   * the caller knowing or caring.
+   */
   struct AggregateInfo {
+    static constexpr uint32_t kMaxNumComponents = 2;
+
     // The overall type of the aggregation
     const ExpressionType aggregate_type;
 
@@ -139,9 +116,6 @@ class Aggregation {
 
     // If the aggregate shall produce distinct output
     bool is_distinct;
-
-    // Index for the runtime hash table, only used if is_distinct is true
-    uint32_t hast_table_index;
   };
 
  private:
@@ -178,13 +152,6 @@ class Aggregation {
 
   // The storage format we use to store values
   UpdateableStorage storage_;
-
-  // Hash tables and their runtime IDs for the distinct aggregations, access via
-  // index
-  std::vector<std::pair<OAHashTable, QueryState::Id>> hash_table_infos_;
-
-  // Reference to QueryState, needed for the hash tables
-  QueryState &query_state_;
 };
 
 }  // namespace codegen

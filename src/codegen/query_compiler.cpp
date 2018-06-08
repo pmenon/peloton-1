@@ -44,14 +44,27 @@ std::unique_ptr<Query> QueryCompiler::Compile(
 
 // Check if the given query can be compiled. This search is not exhaustive ...
 bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan) {
+  return IsSupported(plan, nullptr);
+}
+
+bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan,
+                                const planner::AbstractPlan *parent) {
   switch (plan.GetPlanNodeType()) {
     case PlanNodeType::SEQSCAN:
     case PlanNodeType::CSVSCAN:
     case PlanNodeType::ORDERBY:
     case PlanNodeType::DELETE:
     case PlanNodeType::INSERT:
-    case PlanNodeType::UPDATE:
+    case PlanNodeType::UPDATE: {
+      break;
+    }
     case PlanNodeType::AGGREGATE_V2: {
+      const auto &agg_plan = static_cast<const planner::AggregatePlan &>(plan);
+      for (const auto &agg_term : agg_plan.GetUniqueAggTerms()) {
+        if (agg_term.distinct) {
+          return false;
+        }
+      }
       break;
     }
     case PlanNodeType::PROJECTION: {
@@ -80,6 +93,10 @@ bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan) {
       }
     }
     case PlanNodeType::HASH: {
+      if (parent != nullptr &&
+          parent->GetPlanNodeType() != PlanNodeType::HASHJOIN) {
+        return false;
+      }
       break;
     }
     default: { return false; }
@@ -112,7 +129,7 @@ bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan) {
 
   // Check all children
   for (const auto &child : plan.GetChildren()) {
-    if (!IsSupported(*child)) {
+    if (!IsSupported(*child, &plan)) {
       return false;
     }
   }
