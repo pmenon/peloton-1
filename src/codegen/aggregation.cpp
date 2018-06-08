@@ -333,60 +333,6 @@ void Aggregation::DoNullCheck(
   null_bitmap.MergeValues(valid_update, null_byte_snapshot);
 }
 
-// Advance the value of a specific aggregate. Performs NULL check if necessary
-// and finally calls DoAdvanceValue().
-void Aggregation::AdvanceValue(
-    CodeGen &codegen, llvm::Value *space,
-    const std::vector<codegen::Value> &next_vals,
-    const Aggregation::AggregateInfo &aggregate_info,
-    UpdateableStorage::NullBitmap &null_bitmap) const {
-  const Value &update = next_vals[aggregate_info.source_index];
-
-  switch (aggregate_info.aggregate_type) {
-    case ExpressionType::AGGREGATE_SUM:
-    case ExpressionType::AGGREGATE_MIN:
-    case ExpressionType::AGGREGATE_MAX: {
-      // If the aggregate is not NULL-able, elide NULL check
-      if (!null_bitmap.IsNullable(aggregate_info.storage_indices[0])) {
-        DoAdvanceValue(codegen, space, aggregate_info.aggregate_type,
-                       aggregate_info.storage_indices[0], update);
-      } else {
-        DoNullCheck(codegen, space, aggregate_info.aggregate_type,
-                    aggregate_info.storage_indices[0], update, null_bitmap);
-      }
-      break;
-    }
-    case ExpressionType::AGGREGATE_COUNT:
-    case ExpressionType::AGGREGATE_COUNT_STAR: {
-      // COUNT can't be nullable, so skip the null check
-      DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_COUNT,
-                     aggregate_info.storage_indices[0], update);
-      break;
-    }
-    case ExpressionType::AGGREGATE_AVG: {
-      // If the SUM is not NULL-able, elide NULL check
-      if (!null_bitmap.IsNullable(aggregate_info.storage_indices[0])) {
-        DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_SUM,
-                       aggregate_info.storage_indices[0], update);
-      } else {
-        DoNullCheck(codegen, space, ExpressionType::AGGREGATE_SUM,
-                    aggregate_info.storage_indices[0], update, null_bitmap);
-      }
-
-      // COUNT can't be nullable, so skip the null check
-      DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_COUNT,
-                     aggregate_info.storage_indices[1], update);
-
-      break;
-    }
-    default: {
-      throw Exception(StringUtil::Format(
-          "Unexpected aggregate type '%s' when advancing aggregator",
-          ExpressionTypeToString(aggregate_info.aggregate_type).c_str()));
-    }
-  }
-}
-
 // Advance each of the aggregates stored in the provided storage space
 void Aggregation::AdvanceValues(
     CodeGen &codegen, llvm::Value *space,
@@ -396,7 +342,51 @@ void Aggregation::AdvanceValues(
 
   // Loop over all aggregates, advancing each
   for (const auto &aggregate_info : aggregate_infos_) {
-    AdvanceValue(codegen, space, next_vals, aggregate_info, null_bitmap);
+    const Value &update = next_vals[aggregate_info.source_index];
+
+    switch (aggregate_info.aggregate_type) {
+      case ExpressionType::AGGREGATE_SUM:
+      case ExpressionType::AGGREGATE_MIN:
+      case ExpressionType::AGGREGATE_MAX: {
+        // If the aggregate is not NULL-able, elide NULL check
+        if (!null_bitmap.IsNullable(aggregate_info.storage_indices[0])) {
+          DoAdvanceValue(codegen, space, aggregate_info.aggregate_type,
+                         aggregate_info.storage_indices[0], update);
+        } else {
+          DoNullCheck(codegen, space, aggregate_info.aggregate_type,
+                      aggregate_info.storage_indices[0], update, null_bitmap);
+        }
+        break;
+      }
+      case ExpressionType::AGGREGATE_COUNT:
+      case ExpressionType::AGGREGATE_COUNT_STAR: {
+        // COUNT can't be nullable, so skip the null check
+        DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_COUNT,
+                       aggregate_info.storage_indices[0], update);
+        break;
+      }
+      case ExpressionType::AGGREGATE_AVG: {
+        // If the SUM is not NULL-able, elide NULL check
+        if (!null_bitmap.IsNullable(aggregate_info.storage_indices[0])) {
+          DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_SUM,
+                         aggregate_info.storage_indices[0], update);
+        } else {
+          DoNullCheck(codegen, space, ExpressionType::AGGREGATE_SUM,
+                      aggregate_info.storage_indices[0], update, null_bitmap);
+        }
+
+        // COUNT can't be nullable, so skip the null check
+        DoAdvanceValue(codegen, space, ExpressionType::AGGREGATE_COUNT,
+                       aggregate_info.storage_indices[1], update);
+
+        break;
+      }
+      default: {
+        throw Exception(StringUtil::Format(
+            "Unexpected aggregate type '%s' when advancing aggregator",
+            ExpressionTypeToString(aggregate_info.aggregate_type).c_str()));
+      }
+    }
   }
 
   // Write the final contents of the null bitmap

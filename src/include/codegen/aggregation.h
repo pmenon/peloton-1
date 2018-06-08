@@ -136,13 +136,6 @@ class Aggregation {
   void DoAdvanceValue(CodeGen &codegen, llvm::Value *space, ExpressionType type,
                       uint32_t storage_index, const codegen::Value &next) const;
 
-  // Advancethe value of a specifig aggregate. Performs NULL check if necessary
-  // and finally calls DoAdvanceValue()
-  void AdvanceValue(CodeGen &codegen, llvm::Value *space,
-                    const std::vector<codegen::Value> &next_vals,
-                    const Aggregation::AggregateInfo &agg,
-                    UpdateableStorage::NullBitmap &null_bitmap) const;
-
  private:
   // Is this a global aggregation?
   bool is_global_;
