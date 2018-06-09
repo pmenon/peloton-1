@@ -142,7 +142,7 @@ bool AggregateExecutor::DExecute() {
     // mixed terms, we should return 0 for counts and null for others.
     bool all_count_aggs = true;
     for (oid_t aggno = 0; aggno < node.GetUniqueAggTerms().size(); aggno++) {
-      auto agg_type = node.GetUniqueAggTerms()[aggno].aggtype;
+      auto agg_type = node.GetUniqueAggTerms()[aggno].agg_type;
       if (agg_type != ExpressionType::AGGREGATE_COUNT &&
           agg_type != ExpressionType::AGGREGATE_COUNT_STAR)
         all_count_aggs = false;

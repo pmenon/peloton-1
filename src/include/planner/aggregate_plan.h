@@ -6,7 +6,7 @@
 //
 // Identification: src/include/planner/aggregate_plan.h
 //
-// Copyright (c) 2015-16, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -23,21 +23,27 @@ namespace peloton {
 namespace expression {
 class AbstractExpression;
 class Parameter;
-}
+}  // namespace expression
 
 namespace planner {
 
 class AggregatePlan : public AbstractPlan {
  public:
+  /**
+   * A single aggregate in the overall plan. For example, this may represent a
+   * single AVG(a) on a column 'a'.
+   */
   class AggTerm {
    public:
-    ExpressionType aggtype;
-    const expression::AbstractExpression *expression;
+    ExpressionType agg_type;
+    std::unique_ptr<expression::AbstractExpression> expression;
     bool distinct;
+
     // The attribute information and ID for this aggregate
     AttributeInfo agg_ai;
 
-    AggTerm(ExpressionType et, expression::AbstractExpression *expr,
+    AggTerm(ExpressionType et,
+            std::unique_ptr<expression::AbstractExpression> &&expr,
             bool distinct = false);
 
     // Bindings
@@ -49,22 +55,16 @@ class AggregatePlan : public AbstractPlan {
   AggregatePlan(
       std::unique_ptr<const planner::ProjectInfo> &&project_info,
       std::unique_ptr<const expression::AbstractExpression> &&predicate,
-      const std::vector<AggTerm> &&unique_agg_terms,
-      const std::vector<oid_t> &&groupby_col_ids,
+      std::vector<AggTerm> &&unique_agg_terms,
+      std::vector<oid_t> &&groupby_col_ids,
       std::shared_ptr<const catalog::Schema> &output_schema,
       AggregateType aggregate_strategy)
       : project_info_(std::move(project_info)),
         predicate_(std::move(predicate)),
-        unique_agg_terms_(unique_agg_terms),
-        groupby_col_ids_(groupby_col_ids),
+        unique_agg_terms_(std::move(unique_agg_terms)),
+        groupby_col_ids_(std::move(groupby_col_ids)),
         output_schema_(output_schema),
         agg_strategy_(aggregate_strategy) {}
-
-  ~AggregatePlan() {
-    for (auto term : unique_agg_terms_) {
-      delete term.expression;
-    }
-  }
 
   // Bindings
   void PerformBinding(BindingContext &binding_context) override;
@@ -117,32 +117,13 @@ class AggregatePlan : public AbstractPlan {
 
   const std::vector<oid_t> &GetColumnIds() const { return column_ids_; }
 
-  std::unique_ptr<AbstractPlan> Copy() const override {
-    std::vector<AggTerm> copied_agg_terms;
-    for (const AggTerm &term : unique_agg_terms_) {
-      copied_agg_terms.push_back(term.Copy());
-    }
-    std::vector<oid_t> copied_groupby_col_ids(groupby_col_ids_);
-
-    std::shared_ptr<const catalog::Schema> output_schema_copy(
-        catalog::Schema::CopySchema(GetOutputSchema()));
-    AggregatePlan *new_plan = new AggregatePlan(
-        project_info_->Copy(),
-        std::unique_ptr<const expression::AbstractExpression>(
-            predicate_->Copy()),
-        std::move(copied_agg_terms), std::move(copied_groupby_col_ids),
-        output_schema_copy, agg_strategy_);
-    return std::unique_ptr<AbstractPlan>(new_plan);
-  }
+  std::unique_ptr<AbstractPlan> Copy() const override;
 
   hash_t Hash() const override;
 
   bool operator==(const AbstractPlan &rhs) const override;
-  bool operator!=(const AbstractPlan &rhs) const override {
-    return !(*this == rhs);
-  }
 
-  virtual void VisitParameters(
+  void VisitParameters(
       codegen::QueryParametersMap &map,
       std::vector<peloton::type::Value> &values,
       const std::vector<peloton::type::Value> &values_from_user) override;

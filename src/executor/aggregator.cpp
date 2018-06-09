@@ -6,7 +6,7 @@
 //
 // Identification: src/executor/aggregator.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -198,7 +198,7 @@ bool HashAggregator::Advance(AbstractTuple *cur_tuple) {
 
     for (oid_t aggno = 0; aggno < node->GetUniqueAggTerms().size(); aggno++) {
       aggregate_list->aggregates[aggno] =
-          GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].aggtype);
+          GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].agg_type);
 
       bool distinct = node->GetUniqueAggTerms()[aggno].distinct;
       aggregate_list->aggregates[aggno]->SetDistinct(distinct);
@@ -214,7 +214,7 @@ bool HashAggregator::Advance(AbstractTuple *cur_tuple) {
 
   // Update the aggregation calculation
   for (oid_t aggno = 0; aggno < node->GetUniqueAggTerms().size(); aggno++) {
-    auto predicate = node->GetUniqueAggTerms()[aggno].expression;
+    auto &predicate = node->GetUniqueAggTerms()[aggno].expression;
     type::Value value = type::ValueFactory::GetIntegerValue(1).Copy();
     if (predicate) {
       value = node->GetUniqueAggTerms()[aggno].expression->Evaluate(
@@ -307,7 +307,7 @@ bool SortedAggregator::Advance(AbstractTuple *next_tuple) {
       // Clean up previous aggregate
       delete aggregates[aggno];
       aggregates[aggno] =
-          GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].aggtype);
+          GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].agg_type);
 
       bool distinct = node->GetUniqueAggTerms()[aggno].distinct;
       aggregates[aggno]->SetDistinct(distinct);
@@ -325,7 +325,7 @@ bool SortedAggregator::Advance(AbstractTuple *next_tuple) {
 
   // Update the aggregation calculation
   for (oid_t aggno = 0; aggno < node->GetUniqueAggTerms().size(); aggno++) {
-    auto predicate = node->GetUniqueAggTerms()[aggno].expression;
+    auto &predicate = node->GetUniqueAggTerms()[aggno].expression;
     type::Value value = type::ValueFactory::GetIntegerValue(1);
     if (predicate) {
       value = node->GetUniqueAggTerms()[aggno].expression->Evaluate(
@@ -361,10 +361,10 @@ PlainAggregator::PlainAggregator(const planner::AggregatePlan *node,
   // initialize aggregators
   for (oid_t aggno = 0; aggno < node->GetUniqueAggTerms().size(); aggno++) {
     LOG_TRACE("Aggregate term type: %s",
-              ExpressionTypeToString(node->GetUniqueAggTerms()[aggno].aggtype)
+              ExpressionTypeToString(node->GetUniqueAggTerms()[aggno].agg_type)
                   .c_str());
     aggregates[aggno] =
-        GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].aggtype);
+        GetAttributeAggregatorInstance(node->GetUniqueAggTerms()[aggno].agg_type);
 
     bool distinct = node->GetUniqueAggTerms()[aggno].distinct;
     aggregates[aggno]->SetDistinct(distinct);
@@ -374,7 +374,7 @@ PlainAggregator::PlainAggregator(const planner::AggregatePlan *node,
 bool PlainAggregator::Advance(AbstractTuple *next_tuple) {
   // Update the aggregation calculation
   for (oid_t aggno = 0; aggno < node->GetUniqueAggTerms().size(); aggno++) {
-    auto predicate = node->GetUniqueAggTerms()[aggno].expression;
+    auto &predicate = node->GetUniqueAggTerms()[aggno].expression;
     type::Value value = (type::ValueFactory::GetIntegerValue(1));
     if (predicate) {
       value =

@@ -6,7 +6,7 @@
 //
 // Identification: test/codegen/group_by_translator_test.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,12 +47,9 @@ TEST_F(GroupByTranslatorTest, SingleColumnGrouping) {
   std::unique_ptr<planner::ProjectInfo> proj_info{
       new planner::ProjectInfo(TargetList{}, std::move(direct_map_list))};
 
-  // 2) Setup the aggregations
-  // For count(*) just use a TVE
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 0);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_COUNT_STAR, tve_expr}};
+  // 2) Setup the aggregations. COUNT(*) doesn't need an input expression.
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_COUNT_STAR, nullptr);
 
   // 3) The grouping column
   std::vector<oid_t> gb_cols = {0};
@@ -90,8 +87,7 @@ TEST_F(GroupByTranslatorTest, SingleColumnGrouping) {
   // Each group should have a count of one (since the grouping column is unique)
   type::Value const_one = type::ValueFactory::GetIntegerValue(1);
   for (const auto &tuple : results) {
-    EXPECT_TRUE(tuple.GetValue(1).CompareEquals(const_one) ==
-                CmpBool::CmpTrue);
+    EXPECT_TRUE(tuple.GetValue(1).CompareEquals(const_one) == CmpBool::CmpTrue);
   }
 }
 
@@ -107,12 +103,9 @@ TEST_F(GroupByTranslatorTest, MultiColumnGrouping) {
   std::unique_ptr<planner::ProjectInfo> proj_info{
       new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
-  // 2) Setup the aggregations
-  // For count(*) just use a TVE
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 0);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_COUNT_STAR, tve_expr}};
+  // 2) Setup the aggregations. COUNT(*) doesn't need an input expression.
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_COUNT_STAR, nullptr);
 
   // 3) The grouping column
   std::vector<oid_t> gb_cols = {0, 1};
@@ -169,10 +162,11 @@ TEST_F(GroupByTranslatorTest, AverageAggregation) {
       new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
   // 2) Setup the average over 'b'
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_AVG, tve_expr}};
+
+  std::unique_ptr<expression::AbstractExpression> tve_expr(
+      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1));
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_AVG, std::move(tve_expr));
 
   // 3) The grouping column
   std::vector<oid_t> gb_cols = {0};
@@ -221,10 +215,10 @@ TEST_F(GroupByTranslatorTest, AggregationWithOutputPredicate) {
       new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
   // 2) Setup the average over 'b'
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_AVG, tve_expr}};
+  std::unique_ptr<expression::AbstractExpression> tve_expr(
+      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1));
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_AVG, std::move(tve_expr));
 
   // 3) The grouping column
   std::vector<oid_t> gb_cols = {0};
@@ -239,9 +233,8 @@ TEST_F(GroupByTranslatorTest, AggregationWithOutputPredicate) {
       new expression::TupleValueExpression(type::TypeId::DECIMAL, 0, 1);
   auto *const_50 = new expression::ConstantValueExpression(
       type::ValueFactory::GetDecimalValue(50.0));
-  ExpressionPtr x_gt_50{
-      new expression::ComparisonExpression(ExpressionType::COMPARE_GREATERTHAN,
-                                           x_exp, const_50)};
+  ExpressionPtr x_gt_50{new expression::ComparisonExpression(
+      ExpressionType::COMPARE_GREATERTHAN, x_exp, const_50)};
 
   // 6) Finally, the aggregation node
   std::unique_ptr<planner::AbstractPlan> agg_plan{new planner::AggregatePlan(
@@ -282,10 +275,10 @@ TEST_F(GroupByTranslatorTest, AggregationWithInputPredciate) {
       new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
   // 2) Setup the average over 'b'
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_AVG, tve_expr}};
+  std::unique_ptr<expression::AbstractExpression> tve_expr(
+      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1));
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_AVG, std::move(tve_expr));
 
   // 3) The grouping column
   std::vector<oid_t> gb_cols = {0};
@@ -341,12 +334,9 @@ TEST_F(GroupByTranslatorTest, SingleCountStar) {
   std::unique_ptr<planner::ProjectInfo> proj_info{
       new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
-  // 2) Setup the aggregations
-  // For count(*) just use a TVE
-  auto *tve_expr =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 0);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_COUNT_STAR, tve_expr}};
+  // 2) Setup the aggregations. COUNT(*) doesn't need an input expression.
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_COUNT_STAR, nullptr);
 
   // 3) No grouping
   std::vector<oid_t> gb_cols = {};
@@ -380,8 +370,7 @@ TEST_F(GroupByTranslatorTest, SingleCountStar) {
   const auto &results = buffer.GetOutputTuples();
   EXPECT_EQ(1, results.size());
   EXPECT_TRUE(results[0].GetValue(0).CompareEquals(
-                  type::ValueFactory::GetBigIntValue(10)) ==
-              CmpBool::CmpTrue);
+                  type::ValueFactory::GetBigIntValue(10)) == CmpBool::CmpTrue);
 }
 
 TEST_F(GroupByTranslatorTest, MinAndMax) {
@@ -397,13 +386,13 @@ TEST_F(GroupByTranslatorTest, MinAndMax) {
       new planner::ProjectInfo(TargetList{}, std::move(direct_map_list))};
 
   // 2) Setup MAX() aggregation on column 'a' and MIN() on 'b'
-  auto *a_col =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 0);
-  auto *b_col =
-      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1);
-  std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-      {ExpressionType::AGGREGATE_MAX, a_col},
-      {ExpressionType::AGGREGATE_MIN, b_col}};
+  std::unique_ptr<expression::AbstractExpression> a_col(
+      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 0));
+  std::unique_ptr<expression::AbstractExpression> b_col(
+      new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1));
+  std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_MAX, std::move(a_col));
+  agg_terms.emplace_back(ExpressionType::AGGREGATE_MIN, std::move(b_col));
 
   // 3) No grouping
   std::vector<oid_t> gb_cols = {};
@@ -445,14 +434,12 @@ TEST_F(GroupByTranslatorTest, MinAndMax) {
   // maximum row ID is equal to # inserted - 1. Therefore:
   // MAX(a) = (# inserted - 1) * 10 = (10 - 1) * 10 = 9 * 10 = 90
   EXPECT_TRUE(results[0].GetValue(0).CompareEquals(
-                  type::ValueFactory::GetBigIntValue(90)) ==
-              CmpBool::CmpTrue);
+                  type::ValueFactory::GetBigIntValue(90)) == CmpBool::CmpTrue);
 
   // The values of 'b' are equal to the (zero-indexed) row ID * 10 + 1. The
   // minimum row ID is 0. Therefore: MIN(b) = 0 * 10 + 1 = 1
   EXPECT_TRUE(results[0].GetValue(1).CompareEquals(
-                  type::ValueFactory::GetBigIntValue(1)) ==
-              CmpBool::CmpTrue);
+                  type::ValueFactory::GetBigIntValue(1)) == CmpBool::CmpTrue);
 }
 
 }  // namespace test

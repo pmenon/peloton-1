@@ -6,7 +6,7 @@
 //
 // Identification: test/codegen/query_cache_test.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -161,10 +161,10 @@ class QueryCacheTest : public PelotonCodeGenTest {
         new planner::ProjectInfo(TargetList(), std::move(direct_map_list))};
 
     // 2) Setup the average over 'b'
-    auto *tve_expr =
-        new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1);
-    std::vector<planner::AggregatePlan::AggTerm> agg_terms = {
-        {ExpressionType::AGGREGATE_AVG, tve_expr}};
+    std::unique_ptr<expression::AbstractExpression> tve_expr(
+        new expression::TupleValueExpression(type::TypeId::INTEGER, 0, 1));
+    std::vector<planner::AggregatePlan::AggTerm> agg_terms;
+    agg_terms.emplace_back(ExpressionType::AGGREGATE_AVG, std::move(tve_expr));
     agg_terms[0].agg_ai.type = codegen::type::Decimal::Instance();
 
     // 3) The grouping column
@@ -199,10 +199,12 @@ class QueryCacheTest : public PelotonCodeGenTest {
 
   std::shared_ptr<planner::NestedLoopJoinPlan> GetBlockNestedLoopJoinPlan() {
     // Output all columns
-    DirectMapList direct_map_list = {
-        {0, std::make_pair(0, 0)}, {1, std::make_pair(0, 1)},
-        {2, std::make_pair(0, 2)}, {3, std::make_pair(1, 0)},
-        {4, std::make_pair(1, 1)}, {5, std::make_pair(1, 2)}};
+    DirectMapList direct_map_list = {{0, std::make_pair(0, 0)},
+                                     {1, std::make_pair(0, 1)},
+                                     {2, std::make_pair(0, 2)},
+                                     {3, std::make_pair(1, 0)},
+                                     {4, std::make_pair(1, 1)},
+                                     {5, std::make_pair(1, 2)}};
     std::unique_ptr<planner::ProjectInfo> projection{
         new planner::ProjectInfo(TargetList{}, std::move(direct_map_list))};
 
@@ -238,7 +240,6 @@ class QueryCacheTest : public PelotonCodeGenTest {
  private:
   uint32_t num_rows_to_insert = 64;
 };
-
 
 TEST_F(QueryCacheTest, SimpleCache) {
   int CACHE_USED_BY_CATALOG = codegen::QueryCache::Instance().GetCount();

@@ -6,7 +6,7 @@
 //
 // Identification: src/planner/aggregate_plan.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,43 +19,61 @@
 namespace peloton {
 namespace planner {
 
-AggregatePlan::AggTerm::AggTerm(ExpressionType et,
-                                expression::AbstractExpression *expr,
-                                bool distinct)
-    : aggtype(et), expression(expr), distinct(distinct) {}
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Aggregate Term
+///
+////////////////////////////////////////////////////////////////////////////////
+
+AggregatePlan::AggTerm::AggTerm(
+    ExpressionType et, std::unique_ptr<expression::AbstractExpression> &&expr,
+    bool distinct)
+    : agg_type(et), expression(std::move(expr)), distinct(distinct) {
+  agg_ai.name = StringUtil::Format(
+      "%s(%s)", ExpressionTypeToString(agg_type).c_str(),
+      (expression != nullptr ? expression->GetInfo().c_str() : "*"));
+}
 
 void AggregatePlan::AggTerm::PerformBinding(bool is_global,
                                             BindingContext &binding_context) {
   // If there's an input expression, first perform binding
-  auto *agg_expr = const_cast<expression::AbstractExpression *>(expression);
-  if (agg_expr != nullptr) {
-    agg_expr->PerformBinding({&binding_context});
+  if (expression != nullptr) {
+    expression->PerformBinding({&binding_context});
   }
 
   // Setup the aggregate's return type
-  switch (aggtype) {
+  switch (agg_type) {
     case ExpressionType::AGGREGATE_COUNT:
     case ExpressionType::AGGREGATE_COUNT_STAR: {
-      // The SQL type of COUNT() or COUNT(*) is always a non-nullable BIGINT
-      agg_ai.type = codegen::type::Type{codegen::type::BigInt::Instance()};
+      /*
+       * The SQL type of COUNT() or COUNT(*) is always a non-nullable BIGINT
+       */
+      agg_ai.type =
+          codegen::type::Type(codegen::type::BigInt::Instance(), false);
       break;
     }
     case ExpressionType::AGGREGATE_AVG: {
-      // AVG() must have an input expression (that has been bound earlier).
-      // The return type of the AVG() aggregate is always a SQL DECIMAL that
-      // may or may not be NULL depending on the input expression.
+      /*
+       * AVG() must have an input expression (that has been bound earlier). The
+       * return type of the AVG() aggregate is always a SQL DECIMAL that may or
+       * may not be NULL depending on the input expression.
+       */
       PELOTON_ASSERT(expression != nullptr);
       // TODO: Move this logic into the SQL type
       const auto &input_type = expression->ResultType();
-      agg_ai.type = codegen::type::Type{codegen::type::Decimal::Instance(),
-                                        input_type.nullable || is_global};
+      bool nullable = input_type.nullable || is_global;
+
+      agg_ai.type =
+          codegen::type::Type(codegen::type::Decimal::Instance(), nullable);
       break;
     }
     case ExpressionType::AGGREGATE_MAX:
     case ExpressionType::AGGREGATE_MIN:
     case ExpressionType::AGGREGATE_SUM: {
-      // These aggregates must have an input expression and takes on the same
-      // return type as its input expression.
+      /*
+       * These aggregates must have an input expression and takes on the same
+       * return type as its input expression.
+       */
       PELOTON_ASSERT(expression != nullptr);
       agg_ai.type = expression->ResultType();
       if (is_global) {
@@ -64,15 +82,23 @@ void AggregatePlan::AggTerm::PerformBinding(bool is_global,
       break;
     }
     default: {
-      throw Exception{StringUtil::Format(
-          "%s not a valid aggregate", ExpressionTypeToString(aggtype).c_str())};
+      throw Exception(
+          StringUtil::Format("%s not a valid aggregate",
+                             ExpressionTypeToString(agg_type).c_str()));
     }
   }
 }
 
 AggregatePlan::AggTerm AggregatePlan::AggTerm::Copy() const {
-  return AggTerm(aggtype, expression->Copy(), distinct);
+  std::unique_ptr<expression::AbstractExpression> expr_copy(expression->Copy());
+  return AggTerm(agg_type, std::move(expr_copy), distinct);
 }
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Aggregate Plan
+///
+////////////////////////////////////////////////////////////////////////////////
 
 void AggregatePlan::PerformBinding(BindingContext &binding_context) {
   BindingContext input_context;
@@ -115,6 +141,7 @@ void AggregatePlan::PerformBinding(BindingContext &binding_context) {
     std::vector<const BindingContext *> inputs = {&input_context, &agg_ctx};
     GetProjectInfo()->PerformRebinding(binding_context, inputs);
   }
+
   // Let the predicate do its binding (if one exists)
   const auto *predicate = GetPredicate();
   if (predicate != nullptr) {
@@ -123,12 +150,37 @@ void AggregatePlan::PerformBinding(BindingContext &binding_context) {
   }
 }
 
+std::unique_ptr<AbstractPlan> AggregatePlan::Copy() const {
+  // Copy agg terms
+  std::vector<AggTerm> copied_agg_terms;
+  for (const auto &term : unique_agg_terms_) {
+    copied_agg_terms.push_back(term.Copy());
+  }
+
+  // Copy grouping column IDs
+  std::vector<oid_t> copied_groupby_col_ids(groupby_col_ids_);
+
+  // Copy schema
+  std::shared_ptr<const catalog::Schema> output_schema_copy(
+      catalog::Schema::CopySchema(GetOutputSchema()));
+
+  // Construct new plan
+  AggregatePlan *new_plan = new AggregatePlan(
+      project_info_->Copy(),
+      std::unique_ptr<const expression::AbstractExpression>(predicate_->Copy()),
+      std::move(copied_agg_terms), std::move(copied_groupby_col_ids),
+      output_schema_copy, agg_strategy_);
+
+  // Done
+  return std::unique_ptr<AbstractPlan>(new_plan);
+}
+
 hash_t AggregatePlan::Hash(
     const std::vector<planner::AggregatePlan::AggTerm> &agg_terms) const {
   hash_t hash = 0;
 
   for (auto &agg_term : agg_terms) {
-    hash = HashUtil::CombineHashes(hash, HashUtil::Hash(&agg_term.aggtype));
+    hash = HashUtil::CombineHashes(hash, HashUtil::Hash(&agg_term.agg_type));
 
     if (agg_term.expression != nullptr)
       hash = HashUtil::CombineHashes(hash, agg_term.expression->Hash());
@@ -170,11 +222,9 @@ bool AggregatePlan::AreEqual(
   if (A.size() != B.size()) return false;
 
   for (size_t i = 0; i < A.size(); i++) {
-    if (A[i].aggtype != B[i].aggtype) return false;
+    if (A[i].agg_type != B[i].agg_type) return false;
 
-    auto *expr = A[i].expression;
-
-    if (expr && (*expr != *B[i].expression)) return false;
+    if (A[i].expression && (*A[i].expression != *B[i].expression)) return false;
 
     if (A[i].distinct != B[i].distinct) return false;
   }
@@ -227,13 +277,11 @@ void AggregatePlan::VisitParameters(
 
   for (const auto &agg_term : GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
-      auto *expr =
-          const_cast<expression::AbstractExpression *>(agg_term.expression);
-      expr->VisitParameters(map, values, values_from_user);
+      agg_term.expression->VisitParameters(map, values, values_from_user);
     }
   }
 
-  if (GetGroupbyColIds().size() > 0) {
+  if (!GetGroupbyColIds().empty()) {
     auto *predicate =
         const_cast<expression::AbstractExpression *>(GetPredicate());
     if (predicate != nullptr) {

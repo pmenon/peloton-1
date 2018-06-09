@@ -19,6 +19,7 @@
 #include "codegen/operator/projection_translator.h"
 #include "codegen/proxy/hash_table_proxy.h"
 #include "codegen/proxy/oa_hash_table_proxy.h"
+#include "codegen/type/bigint_type.h"
 #include "codegen/type/integer_type.h"
 
 namespace peloton {
@@ -108,8 +109,7 @@ class HashGroupByTranslator::ConsumerProbe : public HashTable::ProbeCallback {
  public:
   ConsumerProbe(const Aggregation &aggregation,
                 const std::vector<codegen::Value> &next_vals)
-      : aggregation_(aggregation),
-        next_vals_(next_vals) {}
+      : aggregation_(aggregation), next_vals_(next_vals) {}
 
   void ProcessEntry(CodeGen &codegen, llvm::Value *data_area) const override {
     aggregation_.AdvanceValues(codegen, data_area, next_vals_);
@@ -137,8 +137,7 @@ class HashGroupByTranslator::ConsumerInsert : public HashTable::InsertCallback {
  public:
   ConsumerInsert(const Aggregation &aggregation,
                  const std::vector<codegen::Value> &initial_vals)
-      : aggregation_(aggregation),
-        initial_vals_(initial_vals) {}
+      : aggregation_(aggregation), initial_vals_(initial_vals) {}
 
   void StoreValue(CodeGen &codegen, llvm::Value *space) const override {
     aggregation_.CreateInitialValues(codegen, space, initial_vals_);
@@ -567,7 +566,7 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
   CollectHashKeys(row, key);
 
   /*
-   * Now collect attributes needed to update the aggregates in the hash table
+   * Now, collect attributes needed to update the aggregates in the hash table
    */
 
   std::vector<codegen::Value> vals;
@@ -578,9 +577,14 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
     if (agg_term.expression != nullptr) {
       vals.push_back(row.DeriveValue(codegen, *agg_term.expression));
     } else {
-      // The aggregation does not rely on an attribute nor an expression. Insert
-      // an empty value since this is probably a COUNT(*)
-      vals.emplace_back();
+      /*
+       * The aggregation doesn't rely on an attribute or expression. It must be
+       * a COUNT(*). So, push back a constant BIGINT 1 value for advancement.
+       */
+      PELOTON_ASSERT(agg_term.agg_type == ExpressionType::AGGREGATE_COUNT_STAR);
+
+      type::Type count_star_type(type::Type(type::BigInt::Instance(), false));
+      vals.emplace_back(count_star_type, codegen.Const64(1));
     }
   }
 

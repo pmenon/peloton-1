@@ -29,7 +29,7 @@ void Aggregation::Setup(
 
   for (uint32_t source_idx = 0; source_idx < aggregates.size(); source_idx++) {
     const auto &agg_term = aggregates[source_idx];
-    switch (agg_term.aggtype) {
+    switch (agg_term.agg_type) {
       case ExpressionType::AGGREGATE_COUNT:
       case ExpressionType::AGGREGATE_COUNT_STAR: {
         /*
@@ -39,7 +39,7 @@ void Aggregation::Setup(
         uint32_t storage_pos = storage_.AddType(count_type);
 
         aggregate_infos_.emplace_back(
-            AggregateInfo{.aggregate_type = agg_term.aggtype,
+            AggregateInfo{.aggregate_type = agg_term.agg_type,
                           .source_index = source_idx,
                           .storage_indices = {{storage_pos}}});
         break;
@@ -58,7 +58,7 @@ void Aggregation::Setup(
         uint32_t storage_pos = storage_.AddType(value_type);
 
         aggregate_infos_.emplace_back(
-            AggregateInfo{.aggregate_type = agg_term.aggtype,
+            AggregateInfo{.aggregate_type = agg_term.agg_type,
                           .source_index = source_idx,
                           .storage_indices = {{storage_pos}}});
         break;
@@ -78,7 +78,7 @@ void Aggregation::Setup(
         uint32_t storage_pos = storage_.AddType(value_type);
 
         aggregate_infos_.emplace_back(
-            AggregateInfo{.aggregate_type = agg_term.aggtype,
+            AggregateInfo{.aggregate_type = agg_term.agg_type,
                           .source_index = source_idx,
                           .storage_indices = {{storage_pos}}});
         break;
@@ -103,7 +103,7 @@ void Aggregation::Setup(
         uint32_t count_storage_pos = storage_.AddType(count_type);
 
         aggregate_infos_.emplace_back(AggregateInfo{
-            .aggregate_type = agg_term.aggtype,
+            .aggregate_type = agg_term.agg_type,
             .source_index = source_idx,
             .storage_indices = {{sum_storage_pos, count_storage_pos}}});
         break;
@@ -111,7 +111,7 @@ void Aggregation::Setup(
       default: {
         throw Exception(StringUtil::Format(
             "Unexpected aggregate type '%s' when preparing aggregation",
-            ExpressionTypeToString(agg_term.aggtype).c_str()));
+            ExpressionTypeToString(agg_term.agg_type).c_str()));
       }
     }
   }
@@ -195,14 +195,14 @@ void Aggregation::DoInitializeValue(
       } else {
         raw_initial = codegen.Const64(1);
       }
-      codegen::Value initial_val{type::BigInt::Instance(), raw_initial};
+      const type::Type count_type(type::BigInt::Instance(), false);
+      codegen::Value initial_val(count_type, raw_initial);
       storage_.SetValueSkipNull(codegen, space, storage_index, initial_val);
       break;
     }
     case ExpressionType::AGGREGATE_COUNT_STAR: {
-      // The initial value for COUNT(*) is 1
-      codegen::Value one{type::BigInt::Instance(), codegen.Const64(1)};
-      storage_.SetValueSkipNull(codegen, space, storage_index, one);
+      // Counts can never be NULL, so skip handling it
+      storage_.SetValueSkipNull(codegen, space, storage_index, initial);
       break;
     }
     default: {
@@ -253,8 +253,7 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
     }
     case ExpressionType::AGGREGATE_COUNT_STAR: {
       auto curr = storage_.GetValueSkipNull(codegen, space, storage_index);
-      auto delta = codegen::Value(type::BigInt::Instance(), codegen.Const64(1));
-      next = curr.Add(codegen, delta);
+      next = curr.Add(codegen, update);
       break;
     }
     default: {
@@ -339,7 +338,6 @@ void Aggregation::AdvanceValues(
       case ExpressionType::AGGREGATE_SUM:
       case ExpressionType::AGGREGATE_MIN:
       case ExpressionType::AGGREGATE_MAX: {
-        // If the aggregate is not NULL-able, elide NULL check
         if (!null_bitmap.IsNullable(aggregate_info.storage_indices[0])) {
           DoAdvanceValue(codegen, space, aggregate_info.aggregate_type,
                          aggregate_info.storage_indices[0], update);
@@ -452,6 +450,13 @@ void Aggregation::MergeValues(CodeGen &codegen, llvm::Value *curr_vals,
   (void)curr_vals;
   (void)new_vals;
   throw NotImplementedException("Merging values not supported yet");
+#if 0
+  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, curr_vals);
+  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, new_vals);
+  for (const auto &agg_info : aggregate_infos_) {
+
+  }
+#endif
 }
 
 }  // namespace codegen

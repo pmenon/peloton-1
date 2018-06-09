@@ -557,9 +557,14 @@ void PlanGenerator::BuildAggregatePlan(
       // Maps the aggregate value in th right tuple to the output
       // See aggregateor.cpp for more detail
       dml.emplace_back(idx, make_pair(1, agg_id++));
+
+      std::unique_ptr<expression::AbstractExpression> agg_col_expr(nullptr);
+      if (agg_col != nullptr) {
+        agg_col_expr.reset(agg_col->Copy());
+      }
+
       aggr_terms.emplace_back(agg_expr->GetExpressionType(),
-                              agg_col == nullptr ? nullptr : agg_col->Copy(),
-                              agg_expr->distinct_);
+                              std::move(agg_col_expr), agg_expr->distinct_);
     } else if (child_expr_map.find(expr) != child_expr_map.end()) {
       dml.emplace_back(idx, make_pair(0, child_expr_map[expr]));
     } else {
