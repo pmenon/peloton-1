@@ -428,31 +428,28 @@ void HashGroupByTranslator::Produce() const {
 
   } else {
     /*
-     * This is a parallel pipeline, so it's a little more involved.
-     *
-     * At this point, we have a collection of thread-local hash tables that
-     * store partial aggregates. We need to coalesce them into a single
-     * partitioned hash table. To do that:
-     *
-     * 1. We first transfer all thread-local hash table partitions to the
-     * global hash table we allocated earlier in the query state.
-     * 2. Then, we issue a partitioned, parallel scan of the global hash table.
+     * At this point, we have one global hash table with potentially still
+     * unmerged overflow partitions. Let's scan this partitioned table and
+     * cooperatively and incrementally built a partitioned global hash table.
      */
 
     CodeGen &codegen = GetCodeGen();
 
-    // 1. Transfer thread-local partitions to global table
-
-    codegen.Call(HashTableProxy::TransferPartitions, {GetThreadStatesPtr()});
-
-    // 2. Setup the call to util::HashTable::ExecutePartitionedScan()
+    // Setup the call to util::HashTable::ExecutePartitionedScan()
 
     auto *dispatch_func =
         HashTableProxy::ExecutePartitionedScan.GetFunction(codegen);
-    std::vector<llvm::Value *> dispatch_args = {merging_func_};
+
+    auto *hash_table = LoadStatePtr(hash_table_id_);
+    auto *merge_func = codegen->CreatePointerCast(
+        merging_func_,
+        proxy::TypeBuilder<codegen::util::HashTable::MergingFunction>::GetType(
+            codegen));
+
+    std::vector<llvm::Value *> dispatch_args = {hash_table, merge_func};
 
     std::vector<llvm::Type *> pipeline_arg_types = {
-        HashTableProxy::GetType(codegen)};
+        HashTableProxy::GetType(codegen)->getPointerTo()};
 
     auto parallel_producer = [this, &producer](
         ConsumerContext &ctx, std::vector<llvm::Value *> args) {
@@ -655,7 +652,8 @@ void HashGroupByTranslator::CollectHashKeys(
 
 void HashGroupByTranslator::RegisterPipelineState(
     PipelineContext &pipeline_ctx) {
-  if (!pipeline_ctx.IsParallel()) {
+  if (!pipeline_ctx.IsParallel() ||
+      pipeline_ctx.GetPipeline() != child_pipeline_) {
     return;
   }
 
@@ -665,12 +663,13 @@ void HashGroupByTranslator::RegisterPipelineState(
    */
 
   tl_hash_table_id_ = pipeline_ctx.RegisterState(
-      "groupBy", HashTableProxy::GetType(GetCodeGen()));
+      "tlGroupBy", HashTableProxy::GetType(GetCodeGen()));
 }
 
 void HashGroupByTranslator::InitializePipelineState(
     PipelineContext &pipeline_ctx) {
-  if (!pipeline_ctx.IsParallel()) {
+  if (!pipeline_ctx.IsParallel() ||
+      pipeline_ctx.GetPipeline() != child_pipeline_) {
     return;
   }
 
@@ -685,9 +684,30 @@ void HashGroupByTranslator::InitializePipelineState(
   hash_table_.Init(codegen, GetExecutorContextPtr(), tl_ht_ptr);
 }
 
+void HashGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
+  if (!pipeline_ctx.IsParallel() ||
+      pipeline_ctx.GetPipeline() != child_pipeline_) {
+    return;
+  }
+
+  /*
+   * In parallel aggregation, after we're built thread-local hash tables, we
+   * need to coalesce them into one. To do this, we transfer all thread-local
+   * data to a global hash table (in a partitioned manner). Luckily, we've built
+   * a method that does that for us, which we invoke here.
+   */
+  auto &codegen = GetCodeGen();
+  auto *global_ht = LoadStatePtr(hash_table_id_);
+  auto *thread_states = GetThreadStatesPtr();
+  auto ht_offset = pipeline_ctx.GetEntryOffset(codegen, tl_hash_table_id_);
+  codegen.Call(HashTableProxy::TransferPartitions,
+               {global_ht, thread_states, codegen.Const32(ht_offset)});
+}
+
 void HashGroupByTranslator::TearDownPipelineState(
     PipelineContext &pipeline_ctx) {
-  if (!pipeline_ctx.IsParallel()) {
+  if (!pipeline_ctx.IsParallel() ||
+      pipeline_ctx.GetPipeline() != child_pipeline_) {
     return;
   }
 

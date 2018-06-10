@@ -266,11 +266,14 @@ void Pipeline::MarkSource(OperatorTranslator *translator,
   auto &exec_consumer = compilation_ctx_.GetExecutionConsumer();
   bool parallel_consumer = exec_consumer.SupportsParallelExec();
 
-  // We choose serial execution for one of four reasons:
-  //   1. If parallel execution is globally disabled.
-  //   2. If the consumer isn't parallel.
-  //   3. If the source wants serial execution.
-  //   4. If the pipeline is already configured to be serial.
+  /*
+   * We choose serial execution for one of four reasons:
+   *   1. If parallel execution is globally disabled.
+   *   2. If the consumer isn't parallel.
+   *   3. If the source of the pipeline explicitly requests serial execution.
+   *   4. If any other operator in the pipeline explicitly requested serial
+   *      execution.
+   */
   if (parallel_exec_disabled || !parallel_consumer ||
       parallelism == Pipeline::Parallelism::Serial ||
       parallelism_ == Pipeline::Parallelism::Serial) {
@@ -278,8 +281,14 @@ void Pipeline::MarkSource(OperatorTranslator *translator,
     return;
   }
 
-  // At this point, the pipeline is either fully parallel or flexible, and the
-  // source is either parallel or flexible. We choose whatever the source wants
+  /*
+   * At this point, the pipeline (including its source) is either entirely
+   * parallel or entirely flexible. For us, "flexible" parallelism isn't a real
+   * thing, i.e., it isn't definitive; it is neither parallel or serial. So, we
+   * make a conservative choice  preferring serial execution unless the source
+   * specifically, clearly, and explicitly requested parallel execution.
+   */
+
   if (parallelism == Pipeline::Parallelism::Flexible) {
     auto pipeline_name = ConstructPipelineName();
     auto source_name = translator->GetPlan().GetInfo();
@@ -560,23 +569,19 @@ void Pipeline::DoRun(
   }
   pipeline_ctx.pipeline_func_ = func.GetFunction();
 
-  // The pipeline function we generated above encapsulates the logic for all
-  // operators in the pipeline. If we're executing it serially then we directly
-  // invoke the function now. If the pipeline is run in parallel then a dispatch
-  // function must have been provided. Either way, we need to setup the call
-  // now.
-  //
-  // In both cases, the pipeline function expects QueryState and ThreadState
-  // pointers are the first two arguments. When run serially, we pass in a NULL
-  // thread state pointer. When running in parallel (through a dispatch
-  // function), we need to convert the QueryState type to a void * because it is
-  // a runtime generated type (i.e., pre-compiled code doesn't know the layout
-  // since it's dynamic)
-  //
-  // After this, the next arguments are whatever the caller provided to use.
-  //
-  // Finally, if the pipeline is run through a dispatcher function, the last
-  // argument is a function pointer to the pipeline function we generated.
+  /*
+   * The pipeline function we generated above encapsulates the logic for **all**
+   * operators in the pipeline. If we're executing it serially then we directly
+   * invoke the function below. If the pipeline is run in parallel then a
+   * dispatch function must've been provided.
+   *
+   * All pipeline functions (regardless of parallelization strategy) arrange for
+   * the QueryState and ThreadState pointers as the first two arguments. When
+   * run serially, we pass in a NULL thread state pointer. When running in
+   * parallel (through a dispatch function), we need to convert the QueryState
+   * type to a void* since it is a JIT generated type that pre-compiled C/C++
+   * doesn't know of.
+   */
 
   std::vector<llvm::Value *> invoke_args = {codegen.GetState()};
   if (IsParallel()) {
@@ -589,16 +594,29 @@ void Pipeline::DoRun(
   invoke_args.insert(invoke_args.end(), dispatch_args.begin(),
                      dispatch_args.end());
 
-  if (dispatch_func != nullptr) {
-    // Convert QueryState to void *
-    invoke_args[0] =
-        codegen->CreateBitOrPointerCast(invoke_args[0], codegen.VoidPtrType());
-    // Tag on the pipeline function
-    invoke_args.push_back(
-        codegen->CreateBitCast(func.GetFunction(), codegen.VoidPtrType()));
-    codegen.CallFunc(dispatch_func, invoke_args);
-  } else {
+  if (dispatch_func == nullptr) {
     codegen.CallFunc(func.GetFunction(), invoke_args);
+  } else {
+    /*
+     * A dispatch function was provided, we need to void-ify the first
+     * QueryState* parameter and tag on a pointer to the pipeline function we
+     * just generated.
+     */
+    invoke_args[0] =
+        codegen->CreatePointerCast(invoke_args[0], codegen.VoidPtrType());
+
+    {
+      std::vector<llvm::Type *> tmp_types =
+          pipeline_ctx.pipeline_func_->getFunctionType()->params();
+      tmp_types[0] = tmp_types[1] = codegen.VoidPtrType();
+      auto fn_type =
+          llvm::FunctionType::get(codegen.VoidType(), tmp_types, false);
+      auto *purified = codegen->CreatePointerCast(pipeline_ctx.pipeline_func_,
+                                                  fn_type->getPointerTo());
+      invoke_args.push_back(purified);
+    }
+
+    codegen.CallFunc(dispatch_func, invoke_args);
   }
 }
 

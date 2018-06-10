@@ -26,8 +26,6 @@ GlobalGroupByTranslator::GlobalGroupByTranslator(
     Pipeline &pipeline)
     : OperatorTranslator(plan, context, pipeline),
       child_pipeline_(this, Pipeline::Parallelism::Serial) {
-  LOG_DEBUG("Constructing GlobalGroupByTranslator ...");
-
   CodeGen &codegen = context.GetCodeGen();
 
   // Prepare the child in the new child pipeline
@@ -56,13 +54,6 @@ GlobalGroupByTranslator::GlobalGroupByTranslator(
   // Allocate state in the function argument for our materialization buffer
   QueryState &query_state = context.GetQueryState();
   mat_buffer_id_ = query_state.RegisterState("buf", mat_buffer_type);
-
-  LOG_DEBUG("Finished constructing GlobalGroupByTranslator ...");
-}
-
-// Initialize the hash table instance
-void GlobalGroupByTranslator::InitializeQueryState() {
-
 }
 
 void GlobalGroupByTranslator::Produce() const {
@@ -136,11 +127,6 @@ void GlobalGroupByTranslator::Consume(ConsumerContext &,
   // Just advance each of the aggregates in the buffer with the provided
   // new values
   aggregation_.AdvanceValues(GetCodeGen(), LoadStatePtr(mat_buffer_id_), vals);
-}
-
-// Cleanup by destroying the aggregation hash-table
-void GlobalGroupByTranslator::TearDownQueryState() {
-
 }
 
 }  // namespace codegen

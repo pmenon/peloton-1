@@ -169,14 +169,18 @@ class HashTable {
    * and a thread state. The query state is provided as a function argument. The
    * thread state will be pulled from the provided ThreadStates object.
    *
-   * @param thread_states The container holding all thread states
    * @param query_state The (opaque) query state
+   * @param thread_states The container holding all thread states
+   * @param table The hash table we'll scan over
+   * @param merge_func The function used to merge overflow partitions into a
+   * new hash table
    * @param scan_func The callback scan function that will scan one partition of
    * the partitioned hash table
    */
-  void ExecutePartitionedScan(
+  static void ExecutePartitionedScan(
       void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-      MergingFunction merge_func, PartitionedScanFunction scan_func);
+      HashTable *table, MergingFunction merge_func,
+      PartitionedScanFunction scan_func);
 
   //////////////////////////////////////////////////////////////////////////////
   ///

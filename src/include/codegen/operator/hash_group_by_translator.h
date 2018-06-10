@@ -44,6 +44,7 @@ class HashGroupByTranslator : public OperatorTranslator {
 
   void RegisterPipelineState(PipelineContext &pipeline_ctx) override;
   void InitializePipelineState(PipelineContext &pipeline_ctx) override;
+  void FinishPipeline(PipelineContext &context) override;
   void TearDownPipelineState(PipelineContext &pipeline_ctx) override;
 
   // The method that produces new tuples

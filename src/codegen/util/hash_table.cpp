@@ -257,17 +257,19 @@ void HashTable::TransferPartitions(
 
 void HashTable::ExecutePartitionedScan(
     void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-    MergingFunction merge_func, PartitionedScanFunction scan_func) {
+    HashTable *table, MergingFunction merge_func,
+    PartitionedScanFunction scan_func) {
   // Set the merging function
   PELOTON_ASSERT(merge_func != nullptr);
-  merging_func_ = merge_func;
+  table->merging_func_ = merge_func;
 
   // Allocate partition tables array
-  PELOTON_ASSERT(part_tables_ == nullptr);
+  PELOTON_ASSERT(table->part_tables_ == nullptr);
   {
     auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
-    part_tables_ = static_cast<HashTable **>(memory_.Allocate(num_bytes));
-    PELOTON_MEMSET(part_tables_, 0, num_bytes);
+    table->part_tables_ =
+        static_cast<HashTable **>(table->memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(table->part_tables_, 0, num_bytes);
   }
 
   // Count number of partitions to build
@@ -289,15 +291,17 @@ void HashTable::ExecutePartitionedScan(
 
     // Iterate over all partitions, spawning work to build tables
     for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
-      if (part_heads_[part_idx] != nullptr) {
-        worker_pool.SubmitTask([this, &query_state, &thread_states, scan_func,
+      if (table->part_heads_[part_idx] != nullptr) {
+        worker_pool.SubmitTask([&table, &query_state, &thread_states, scan_func,
                                 &latch, part_idx]() {
           // Build partitioned table
-          auto *table = BuildPartitionedTable(query_state, part_idx);
+          auto *table_part =
+              table->BuildPartitionedTable(query_state, part_idx);
 
           // Send to scan function
           // TODO: thread states
-          scan_func(query_state, thread_states.AccessThreadState(0), *table);
+          scan_func(query_state, thread_states.AccessThreadState(0),
+                    *table_part);
 
           // Count down
           latch.CountDown();

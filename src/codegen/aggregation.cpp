@@ -476,39 +476,52 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
       continue;
     }
 
+    /*
+     * If neither the current nor the new partial aggregate slot is NULLable,
+     * use the fast path to merge these values together.
+     */
     if (!curr_null_bitmap.IsNullable(agg_info.storage_index)) {
       DoMergePartial(codegen, agg_info, curr_vals, new_vals);
       continue;
     }
 
-#if 0
-    llvm::Value *null_byte_snapshot =
-        curr_null_bitmap.ByteFor(codegen, agg_info.storage_index);
+    /*
+     * Here, both the current aggregate value and the partial aggregate can be
+     * NULL. If the partial aggregate is NULL, we don't need to do anything. If
+     * the partial aggregate is not NULL, but the current aggregate value is, we
+     * overwrite the current value with the partial. If both are non-NULL, we
+     * do a proper merge.
+     */
 
-    lang::If valid_update(codegen, update.IsNotNull(codegen));
+    uint32_t storage_idx = agg_info.storage_index;
+
+    llvm::Value *null_byte_snapshot =
+        curr_null_bitmap.ByteFor(codegen, storage_idx);
+
+    llvm::Value *partial_not_null =
+        codegen->CreateNot(new_null_bitmap.IsNull(codegen, storage_idx));
+    lang::If valid_partial(codegen, partial_not_null);
     {
-      lang::If agg_is_null(
-          codegen, curr_null_bitmap.IsNull(codegen, agg_info.storage_index));
+      llvm::Value *current_null = curr_null_bitmap.IsNull(codegen, storage_idx);
+      lang::If curr_is_null(codegen, current_null);
       {
-        /* Case (2): update is not NULL, but aggregate is NULL */
-        storage_.SetValue(codegen, curr_vals, agg_info.storage_index, update,
+        auto partial =
+            storage_.GetValueSkipNull(codegen, new_vals, storage_idx);
+        storage_.SetValue(codegen, curr_vals, storage_idx, partial,
                           curr_null_bitmap);
       }
-      agg_is_null.ElseBlock();
+      curr_is_null.ElseBlock();
       {
-        /* Case (1): both update and aggregate are not NULL */
+        // Normal merge
         DoMergePartial(codegen, agg_info, curr_vals, new_vals);
       }
-      agg_is_null.EndIf();
+      curr_is_null.EndIf();
 
-      // Merge the null value
-      curr_null_bitmap.MergeValues(agg_is_null, null_byte_snapshot);
+      curr_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
     }
-    valid_update.EndIf();
+    valid_partial.EndIf();
 
-    // Merge the null value
-    curr_null_bitmap.MergeValues(valid_update, null_byte_snapshot);
-#endif
+    curr_null_bitmap.MergeValues(valid_partial, null_byte_snapshot);
   }
 }
 

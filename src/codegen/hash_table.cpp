@@ -232,7 +232,6 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
     // Perform equality check
     auto ret =
         codegen::Value::TestEquality(codegen, entry_1_keys, entry_2_keys);
-    PELOTON_ASSERT(!ret.IsNullable());
     PELOTON_ASSERT(ret.GetType().type_id == ::peloton::type::TypeId::BOOLEAN);
 
     // Done
@@ -305,8 +304,8 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
       llvm::Value *bucket_idx = codegen->CreateAnd(part_entry_hash, mask);
 
       // Bucket chain head
-      llvm::Value *hash_entry =
-          codegen->CreateInBoundsGEP(directory, {bucket_idx});
+      llvm::Value *hash_entry = codegen->CreateLoad(
+          codegen->CreateInBoundsGEP(directory, {bucket_idx}));
 
       // Now merge the current partition entry into the bucket
       merge_into_bucket(codegen, ht_ptr, hash_entry, part_entry, nullptr);
@@ -411,6 +410,7 @@ void HashTable::FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
       auto keys_are_equal = Value::TestEquality(codegen, key, entry_keys);
       lang::If key_match(codegen, keys_are_equal.GetValue(), "keyMatch");
       {
+        // Found match
         callback.ProcessEntry(codegen, key, data_area);
       }
       key_match.EndIf();

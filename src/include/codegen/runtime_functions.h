@@ -89,10 +89,10 @@ class RuntimeFunctions {
    * @param func The callback function that is provided a range of tile groups
    * to scan.
    */
+  using ScanFunction = void (*)(void *, void *, uint64_t, uint64_t);
   static void ExecuteTableScan(
       void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-      uint32_t db_oid, uint32_t table_oid, void *func);
-  //      void (*scanner)(void *, void *, uint64_t, uint64_t));
+      uint32_t db_oid, uint32_t table_oid, ScanFunction func);
 
   /**
    * Invoke a function for each available thread state in parallel.

@@ -147,11 +147,7 @@ void RuntimeFunctions::GetTileGroupLayout(const storage::TileGroup *tile_group,
 
 void RuntimeFunctions::ExecuteTableScan(
     void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-    uint32_t db_oid, uint32_t table_oid, void *func) {
-  //    void (*scanner)(void *, void *, uint64_t, uint64_t)) {
-  using ScanFunc = void (*)(void *, void *, uint64_t, uint64_t);
-  auto *scanner = reinterpret_cast<ScanFunc>(func);
-
+    uint32_t db_oid, uint32_t table_oid, ScanFunction scanner) {
   // The worker pool
   auto &worker_pool = threadpool::MonoQueuePool::GetExecutionInstance();
 
@@ -169,7 +165,7 @@ void RuntimeFunctions::ExecuteTableScan(
   thread_states.Allocate(num_tasks);
 
   // Create count down latch
-  common::synchronization::CountDownLatch latch{num_tasks};
+  common::synchronization::CountDownLatch latch(num_tasks);
 
   // Now, submit the tasks
   for (uint32_t task_id = 0; task_id < num_tasks; task_id++) {
@@ -216,7 +212,7 @@ void RuntimeFunctions::ExecutePerState(
 
   // Create count down latch
   uint32_t num_tasks = thread_states.NumThreads();
-  common::synchronization::CountDownLatch latch{num_tasks};
+  common::synchronization::CountDownLatch latch(num_tasks);
 
   // Loop over states
   for (uint32_t tid = 0; tid < num_tasks; tid++) {
