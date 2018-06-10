@@ -247,7 +247,7 @@ class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
 
   void MergeValues(CodeGen &codegen, llvm::Value *table_values,
                    llvm::Value *new_values) const override {
-    aggregation_.MergeValues(codegen, table_values, new_values);
+    aggregation_.MergePartialAggregates(codegen, table_values, new_values);
   }
 
  private:
@@ -411,7 +411,9 @@ void HashGroupByTranslator::Produce() const {
 
   /* Handle parallel and serial pipelines differently */
 
-  if (GetPipeline().IsSerial()) {
+  auto &pipeline = GetPipeline();
+
+  if (pipeline.IsSerial()) {
     /*
      * This is a serial pipeline. So, we just need to load the global hash table
      * stored in the query state and scan it. To do so, we invoke the generic
@@ -422,7 +424,7 @@ void HashGroupByTranslator::Produce() const {
       producer(ctx, LoadStatePtr(hash_table_id_));
     };
 
-    GetPipeline().RunSerial(serial_producer);
+    pipeline.RunSerial(serial_producer);
 
   } else {
     /*
@@ -458,8 +460,8 @@ void HashGroupByTranslator::Produce() const {
       producer(ctx, args[0]);
     };
 
-    GetPipeline().RunParallel(dispatch_func, dispatch_args, pipeline_arg_types,
-                              parallel_producer);
+    pipeline.RunParallel(dispatch_func, dispatch_args, pipeline_arg_types,
+                         parallel_producer);
   }
 }
 
@@ -552,21 +554,23 @@ void HashGroupByTranslator::Consume(ConsumerContext &context,
 #endif
 }
 
-/*
- * In this function, we take in an input row and update the group in our
- * aggregation hash table.
- */
 void HashGroupByTranslator::Consume(ConsumerContext &ctx,
                                     RowBatch::Row &row) const {
   /*
-   * First, collect the grouping keys we use to probe the aggregation hash table
+   * In this function, we take in an input row and update the group in our
+   * aggregation hash table.
+   *
+   * First, we collect the grouping keys used to probe the hash table.
    */
 
   std::vector<codegen::Value> key;
   CollectHashKeys(row, key);
 
   /*
-   * Now, collect attributes needed to update the aggregates in the hash table
+   * Now, we collect values (derived from attributes or expressions) to update
+   * the aggregates in the hash table. Some aggregate terms have no input
+   * expressions; these are COUNT(*)'s. We synthesize a constant, non-NULL
+   * BIGINT 1 value for those counts.
    */
 
   std::vector<codegen::Value> vals;
@@ -575,14 +579,9 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
   const auto &plan = GetPlanAs<planner::AggregatePlan>();
   for (const auto &agg_term : plan.GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
-      vals.push_back(row.DeriveValue(codegen, *agg_term.expression));
+      vals.emplace_back(row.DeriveValue(codegen, *agg_term.expression));
     } else {
-      /*
-       * The aggregation doesn't rely on an attribute or expression. It must be
-       * a COUNT(*). So, push back a constant BIGINT 1 value for advancement.
-       */
       PELOTON_ASSERT(agg_term.agg_type == ExpressionType::AGGREGATE_COUNT_STAR);
-
       type::Type count_star_type(type::Type(type::BigInt::Instance(), false));
       vals.emplace_back(count_star_type, codegen.Const64(1));
     }

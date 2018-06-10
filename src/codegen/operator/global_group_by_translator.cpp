@@ -13,6 +13,7 @@
 #include "codegen/operator/global_group_by_translator.h"
 
 #include "codegen/compilation_context.h"
+#include "codegen/type/bigint_type.h"
 #include "codegen/vector.h"
 #include "common/logger.h"
 #include "planner/aggregate_plan.h"
@@ -111,15 +112,24 @@ void GlobalGroupByTranslator::Produce() const {
 
 void GlobalGroupByTranslator::Consume(ConsumerContext &,
                                       RowBatch::Row &row) const {
-  // Get the updates to advance the aggregates
-  const auto &plan = GetPlanAs<planner::AggregatePlan>();
+  /*
+   * Here, we collect values (derived from attributes or expressions) to update
+   * the aggregates in the hash table. Some aggregate terms have no input
+   * expressions; these are COUNT(*)'s. We synthesize a constant, non-NULL
+   * BIGINT 1 value for those counts.
+   */
 
-  auto &aggregates = plan.GetUniqueAggTerms();
-  std::vector<codegen::Value> vals{aggregates.size()};
-  for (uint32_t i = 0; i < aggregates.size(); i++) {
-    const auto &agg_term = aggregates[i];
+  std::vector<codegen::Value> vals;
+
+  auto &codegen = GetCodeGen();
+  const auto &plan = GetPlanAs<planner::AggregatePlan>();
+  for (const auto &agg_term : plan.GetUniqueAggTerms()) {
     if (agg_term.expression != nullptr) {
-      vals[i] = row.DeriveValue(GetCodeGen(), *agg_term.expression);
+      vals.emplace_back(row.DeriveValue(codegen, *agg_term.expression));
+    } else {
+      PELOTON_ASSERT(agg_term.agg_type == ExpressionType::AGGREGATE_COUNT_STAR);
+      type::Type count_star_type(type::Type(type::BigInt::Instance(), false));
+      vals.emplace_back(count_star_type, codegen.Const64(1));
     }
   }
 

@@ -13,7 +13,6 @@
 #pragma once
 
 #include <vector>
-#include <array>
 
 #include "codegen/codegen.h"
 #include "codegen/updateable_storage.h"
@@ -23,40 +22,70 @@
 namespace peloton {
 namespace codegen {
 
-//===----------------------------------------------------------------------===//
-// This class is responsible for handling the logic around performing
-// aggregations. Users first setup the aggregation (through Setup()) with all
-// the aggregates they wish calculate. Next, callers provided the initial values
-// of all the aggregates using a call to CreateInitialValues(). Each update to
-// the set of aggregates is made through AdvanceValues(), with updated values
-// for each aggregate. When done, a final call to FinalizeValues() is made to
-// collect all the final aggregate values.
-//
-// Note: the ordering of aggregates and values must be consistent with the
-//       ordering provided during Setup().
-//===----------------------------------------------------------------------===//
+/**
+ * This class is responsible for handling the logic around performing
+ * aggregations. Users first setup the aggregation (through Setup()) with all
+ * the aggregates they wish calculate. Next, callers provided the initial values
+ * of all the aggregates using a call to CreateInitialValues(). Each update to
+ * the set of aggregates is made through AdvanceValues(), with updated values
+ * for each aggregate. When done, a final call to FinalizeValues() is made to
+ * collect all the final aggregate values.
+ *
+ * Note: the ordering of aggregates and values must be consistent with the
+ *       ordering provided during Setup().
+ */
 class Aggregation {
  public:
-  // Setup the aggregation to handle the provided aggregates
+  /**
+   * Configure the aggregation to handle the aggregates of the provided format
+   *
+   * @param codegen The codegen instance
+   * @param agg_terms A list of aggregate types
+   * @param is_global
+   */
   void Setup(CodeGen &codegen,
              const std::vector<planner::AggregatePlan::AggTerm> &agg_terms,
              bool is_global);
 
-  // Create default initial values for all global aggregate components
+  /**
+   * Create default initial values for all global aggregate components.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   */
   void CreateInitialGlobalValues(CodeGen &codegen, llvm::Value *space) const;
 
-  // Store the provided values as the initial values for each of the aggregates
+  /**
+   * Initialize a set of stored aggregates with the provided initial values
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param initial_vals The initial values of each aggregate
+   */
   void CreateInitialValues(
       CodeGen &codegen, llvm::Value *space,
-      const std::vector<codegen::Value> &initial) const;
+      const std::vector<codegen::Value> &initial_vals) const;
 
-  // Advance all stored aggregates (stored in the provided storage space) using
-  // the values in the provided vector
+  /**
+   * Advance all aggregates stored contiguously in the provided storage space
+   * using the delta values in the provided input vector
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param next The list of values to use to update each positionally-aligned
+   * aggregate
+   */
   void AdvanceValues(CodeGen &codegen, llvm::Value *space,
                      const std::vector<codegen::Value> &next) const;
 
-  // Compute the final values of all the aggregates stored in the provided
-  // storage space, inserting them into the provided output vector.
+  /**
+   * Compute the final values of all the aggregates stored in the provided
+   * storage space, inserting them into the provided output vector.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param[out] final_vals Vector where the final aggregates are stored.
+   */
   void FinalizeValues(CodeGen &codegen, llvm::Value *space,
                       std::vector<codegen::Value> &final_vals) const;
 
@@ -66,8 +95,8 @@ class Aggregation {
    * @param curr_vals
    * @param new_vals
    */
-  void MergeValues(CodeGen &codegen, llvm::Value *curr_vals,
-                   llvm::Value *new_vals) const;
+  void MergePartialAggregates(CodeGen &codegen, llvm::Value *curr_vals,
+                              llvm::Value *new_vals) const;
 
   /**
    * Get the total number of bytes needed to store all aggregate values
@@ -78,11 +107,12 @@ class Aggregation {
     return storage_.GetStorageSize();
   }
 
-  // Get the storage format of the aggregates this class is configured to handle
+  /**
+   * Get the storage format of the aggregates this class is configured to handle
+   *
+   * @return
+   */
   const UpdateableStorage &GetAggregateStorage() const { return storage_; }
-
- private:
-  bool IsGlobal() const { return is_global_; }
 
   /**
    * This structure maps higher-level aggregates to their physical storage, and
@@ -100,8 +130,6 @@ class Aggregation {
    * the caller knowing or caring.
    */
   struct AggregateInfo {
-    static constexpr uint32_t kMaxNumComponents = 2;
-
     // The overall type of the aggregation
     const ExpressionType aggregate_type;
 
@@ -109,29 +137,58 @@ class Aggregation {
     // aggregate is stored
     const uint32_t source_index;
 
-    // This array contains the physical storage indices for the components the
-    // aggregation is composed of.
-    // The array is fixed-sized to the maximum possible length
-    const std::array<uint32_t, kMaxNumComponents> storage_indices;
+    // Th position in the physical storage where the aggregate is stored
+    const uint32_t storage_index;
+
+    // Is this aggregate purely internal?
+    bool is_internal;
   };
 
  private:
-  void DoInitializeValue(CodeGen &codegen, llvm::Value *space,
-                         ExpressionType type, uint32_t storage_index,
-                         const Value &initial,
-                         UpdateableStorage::NullBitmap &null_bitmap) const;
+  /**
+   * Is this aggregation configured to be global?
+   *
+   * @return True if global, false otherwise.
+   */
+  bool IsGlobal() const { return is_global_; }
 
-  // Will perform the NULL checking, update the null bitmap and call
-  // DoAdvanceValue if appropriate
-  void DoNullCheck(CodeGen &codegen, llvm::Value *space, ExpressionType type,
-                   uint32_t storage_index, const codegen::Value &update,
+  /**
+   * Tries to update the given aggregate with the provided update value, but
+   * performs a NULL check to determine what and how to update.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param agg_info The aggregate (and information) to update
+   * @param update The delta value we advance the aggregate by
+   * @param null_bitmap The NULL bitmap to use
+   */
+  void DoNullCheck(CodeGen &codegen, llvm::Value *space,
+                   const AggregateInfo &agg_info, const codegen::Value &update,
                    UpdateableStorage::NullBitmap &null_bitmap) const;
 
-  // Advance the value of a specific aggregate component, given its next value.
-  // No NULL checking, the function assumes that the current aggregate value is
-  // not NULL.
-  void DoAdvanceValue(CodeGen &codegen, llvm::Value *space, ExpressionType type,
-                      uint32_t storage_index, const codegen::Value &next) const;
+  /**
+   * Advance the aggregate value assuming the current aggregate value IS NOT
+   * NULL. The delta update value may or may not be NULL.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param agg_info The aggregate (and information) to update
+   * @param next The delta value we advance the aggregate by
+   */
+  void DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
+                      const AggregateInfo &agg_info,
+                      const codegen::Value &next) const;
+
+
+  /**
+   *
+   * @param codegen
+   * @param agg_info
+   * @param curr_vals
+   * @param new_vals
+   */
+  void DoMergePartial(CodeGen &codegen, const AggregateInfo &agg_info,
+                      llvm::Value *curr_vals, llvm::Value *new_vals) const;
 
  private:
   // Is this a global aggregation?
