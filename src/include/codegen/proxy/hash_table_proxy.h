@@ -35,18 +35,19 @@ PROXY(HashTable) {
   DECLARE_MEMBER(1, util::HashTable::Entry **, directory);
   DECLARE_MEMBER(2, uint64_t, size);
   DECLARE_MEMBER(3, uint64_t, mask);
-  DECLARE_MEMBER(4, char[sizeof(util::HashTable) +         // Memory block
-                         sizeof(void *) +         // Next free entry
-                         sizeof(uint64_t) +       // Available bytes
-                         sizeof(uint64_t) +       // # elements
-                         sizeof(uint64_t) +       // Capacity
-                         sizeof(void *) +         // Merging function
+  DECLARE_MEMBER(4, char[sizeof(util::HashTable) +      // Memory block
+                         sizeof(void *) +               // Next free entry
+                         sizeof(uint64_t)],             // Available bytes
+                 opaque_2);
+  DECLARE_MEMBER(5, uint64_t, num_elems);
+  DECLARE_MEMBER(6, uint64_t, capacity);
+  DECLARE_MEMBER(6, char[sizeof(void *) +         // Merging function
                          sizeof(void *) +         // Partition heads
                          sizeof(void *) +         // Partition tails
                          sizeof(void *) +         // Partition hash tables
                          sizeof(uint64_t) +       // Flush threshold
                          sizeof(util::HashTable::Stats)],   // Flush threshold
-                 opaque_2);
+                 opaque_3);
   // clang-format on
   DECLARE_TYPE;
 
@@ -60,6 +61,7 @@ PROXY(HashTable) {
   DECLARE_METHOD(BuildLazy);
   DECLARE_METHOD(ReserveLazy);
   DECLARE_METHOD(MergeLazyUnfinished);
+  DECLARE_METHOD(Grow);
   DECLARE_METHOD(Destroy);
 };
 

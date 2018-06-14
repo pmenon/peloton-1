@@ -197,93 +197,71 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
   llvm::Value *null = codegen.NullPtr(entry_type->getPointerTo());
 
   /*
-   * This function computes compares the hash values of the two given entries
-   */
-  const auto hash_eq =
-      [](CodeGen &codegen, llvm::Value *entry_1, llvm::Value *entry_2) {
-        llvm::Value *entry_1_hash = codegen.Load(EntryProxy::hash, entry_1);
-        llvm::Value *entry_2_hash = codegen.Load(EntryProxy::hash, entry_2);
-        return codegen->CreateICmpEQ(entry_1_hash, entry_2_hash);
-      };
-
-  /*
    * This function performs a comparison between two input keys. We also use
    * two output arguments to return pointers to payloads for each input entry.
    */
   const auto &key_storage = key_storage_;
-  const auto key_eq = [&entry_type, &key_storage](
-      CodeGen &codegen, llvm::Value *entry_1, llvm::Value *&entry_1_values,
-      llvm::Value *entry_2, llvm::Value *&entry_2_values) {
-
+  const auto keys_eq = [&entry_type, &key_storage](
+      CodeGen &codegen, llvm::Value *entry_1, llvm::Value *&entry_1_payload,
+      llvm::Value *entry_2, llvm::Value *&entry_2_payload) {
+    // clang-format off
     std::vector<codegen::Value> entry_1_keys, entry_2_keys;
-
-    llvm::Value *entry_1_keys_ptr =
-        codegen->CreateConstInBoundsGEP2_32(entry_type, entry_1, 1, 0);
-
-    entry_1_values =
-        key_storage.LoadValues(codegen, entry_1_keys_ptr, entry_1_keys);
-
-    llvm::Value *entry_2_keys_ptr =
-        codegen->CreateConstInBoundsGEP2_32(entry_type, entry_2, 1, 0);
-
-    entry_2_values =
-        key_storage.LoadValues(codegen, entry_2_keys_ptr, entry_2_keys);
-
-    // Perform equality check
-    auto ret =
-        codegen::Value::TestEquality(codegen, entry_1_keys, entry_2_keys);
-    PELOTON_ASSERT(ret.GetType().type_id == ::peloton::type::TypeId::BOOLEAN);
-
-    // Done
+    llvm::Value *entry_1_keys_ptr = codegen->CreateConstInBoundsGEP2_32(entry_type, entry_1, 1, 0);
+    llvm::Value *entry_2_keys_ptr = codegen->CreateConstInBoundsGEP2_32(entry_type, entry_2, 1, 0);
+    entry_1_payload = key_storage.LoadValues(codegen, entry_1_keys_ptr, entry_1_keys);
+    entry_2_payload = key_storage.LoadValues(codegen, entry_2_keys_ptr, entry_2_keys);
+    codegen::Value ret = codegen::Value::TestEquality(codegen, entry_1_keys, entry_2_keys);
     return ret.GetValue();
+    // clang-format on
   };
 
-  const auto link_into_table =
-      [](CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *bucket,
-         llvm::Value *part_entry, llvm::BasicBlock *cont_bb) {
-        (void)codegen;
-        (void)ht_ptr;
-        (void)bucket;
-        (void)part_entry;
-        (void)cont_bb;
-      };
-
-  const auto merge_into_bucket =
-      [&null, &hash_eq, &key_eq, &link_into_table, &callback](
-          CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *bucket_head,
-          llvm::Value *part_entry, llvm::BasicBlock *cont_bb) {
-
-        llvm::Value *hash_entry = bucket_head;
-        llvm::Value *cond = codegen->CreateICmpNE(hash_entry, null);
-        lang::Loop chain_loop(codegen, cond, {{"hashIter", hash_entry}});
+  const auto merge_into_bucket = [&null, &keys_eq, &callback](
+      CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *capacity,
+      llvm::Value *bucket_head_ptr, llvm::Value *part_entry,
+      llvm::BasicBlock *found_bb) {
+    // Loop over all entries in the bucket
+    llvm::Value *hash_entry = codegen->CreateLoad(bucket_head_ptr);
+    lang::Loop chain_loop(codegen, codegen->CreateICmpNE(hash_entry, null),
+                          {{"hashIter", hash_entry}});
+    {
+      hash_entry = chain_loop.GetLoopVar(0);
+      // Are hashes equal?
+      llvm::Value *hash_eq =
+          codegen->CreateICmpEQ(codegen.Load(EntryProxy::hash, hash_entry),
+                                codegen.Load(EntryProxy::hash, part_entry));
+      lang::If hash_match(codegen, hash_eq);
+      {
+        // Are keys equal?
+        llvm::Value *hash_entry_payload = nullptr,
+                    *part_entry_payload = nullptr;
+        llvm::Value *key_eq = keys_eq(codegen, hash_entry, hash_entry_payload,
+                                      part_entry, part_entry_payload);
+        lang::If keys_match(codegen, key_eq);
         {
-          lang::If hash_match(codegen,
-                              hash_eq(codegen, hash_entry, part_entry));
-          {
-            llvm::Value *part_entry_values = nullptr,
-                        *hash_entry_values = nullptr;
-            lang::If keys_match(codegen,
-                                key_eq(codegen, hash_entry, hash_entry_values,
-                                       part_entry, part_entry_values));
-            {
-              // Full match
-              callback.MergeValues(codegen, hash_entry_values,
-                                   part_entry_values);
-            }
-            keys_match.EndIf(cont_bb);
-          }
-          hash_match.EndIf();
-
-          hash_entry = codegen.Load(EntryProxy::next, hash_entry);
-          cond = codegen->CreateICmpNE(hash_entry, null);
-          chain_loop.LoopEnd(cond, {hash_entry});
+          // Full match. Perform merge.
+          callback.MergeValues(codegen, hash_entry_payload, part_entry_payload);
         }
+        keys_match.EndIf(found_bb);
+      }
+      hash_match.EndIf();
 
-        /*
-         * part_entry's key doesn't exist in the table. We need to link it in.
-         */
-        link_into_table(codegen, ht_ptr, bucket_head, part_entry, cont_bb);
-      };
+      // Move along
+      hash_entry = codegen.Load(EntryProxy::next, hash_entry);
+      chain_loop.LoopEnd(codegen->CreateICmpNE(hash_entry, null), {hash_entry});
+    }
+
+    /*
+     * part_entry's key doesn't exist in the table. We need to link it in.
+     */
+    llvm::Value *size = codegen.Load(HashTableProxy::size, ht_ptr);
+    llvm::Value *new_size = codegen->CreateAdd(size, codegen.Const64(1));
+    lang::If need_to_grow(codegen, codegen->CreateICmpUGE(new_size, capacity));
+    {
+      // Grow
+      codegen.Call(HashTableProxy::Grow, {ht_ptr});
+    }
+    need_to_grow.EndIf();
+  };
 
   /*
    * This function merges all entries contained in a given partition into the
@@ -291,10 +269,13 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
    */
   const auto merge_partition = [&null, &merge_into_bucket](
       CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *directory,
-      llvm::Value *mask, llvm::Value *partition_head) {
+      llvm::Value *mask, llvm::Value *capacity, llvm::Value *part_head) {
 
-    llvm::Value *cond = codegen->CreateICmpNE(partition_head, null);
-    lang::Loop partition_loop(codegen, cond, {{"partIter", partition_head}});
+    llvm::BasicBlock *found_bb =
+        llvm::BasicBlock::Create(codegen.GetContext(), "found");
+
+    lang::Loop partition_loop(codegen, codegen->CreateICmpNE(part_head, null),
+                              {{"partIter", part_head}});
     {
       llvm::Value *part_entry = partition_loop.GetLoopVar(0);
       llvm::Value *next_part_entry = codegen.Load(EntryProxy::next, part_entry);
@@ -304,14 +285,21 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
       llvm::Value *bucket_idx = codegen->CreateAnd(part_entry_hash, mask);
 
       // Bucket chain head
-      llvm::Value *hash_entry = codegen->CreateLoad(
-          codegen->CreateInBoundsGEP(directory, {bucket_idx}));
+      llvm::Value *bucket_head_ptr =
+          codegen->CreateInBoundsGEP(directory, {bucket_idx});
 
       // Now merge the current partition entry into the bucket
-      merge_into_bucket(codegen, ht_ptr, hash_entry, part_entry, nullptr);
+      merge_into_bucket(codegen, ht_ptr, capacity, bucket_head_ptr, part_entry,
+                        found_bb);
 
-      cond = codegen->CreateICmpNE(next_part_entry, null);
-      partition_loop.LoopEnd(cond, {next_part_entry});
+      // Ending block
+      codegen->CreateBr(found_bb);
+      codegen->GetInsertBlock()->getParent()->getBasicBlockList().push_back(
+          found_bb);
+      codegen->SetInsertPoint(found_bb);
+
+      partition_loop.LoopEnd(codegen->CreateICmpNE(next_part_entry, null),
+                             {next_part_entry});
     }
   };
 
@@ -319,23 +307,25 @@ void HashTable::MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
   // these very often
   llvm::Value *directory = codegen.Load(HashTableProxy::directory, ht_ptr);
   llvm::Value *mask = codegen.Load(HashTableProxy::mask, ht_ptr);
+  llvm::Value *capacity = codegen.Load(HashTableProxy::capacity, ht_ptr);
 
-  llvm::Value *cond = codegen->CreateICmpULT(part_begin, part_end);
-  lang::Loop range_part_loop(codegen, cond, {{"partIdx", part_begin}});
+  lang::Loop range_part_loop(codegen,
+                             codegen->CreateICmpULT(part_begin, part_end),
+                             {{"partIdx", part_begin}});
   {
     llvm::Value *part_idx = range_part_loop.GetLoopVar(0);
 
-    // Load the partition head
-    llvm::Value *partition_head =
+    // Load the head of the partition list1`
+    llvm::Value *part_head =
         codegen->CreateLoad(codegen->CreateInBoundsGEP(partitions, {part_idx}));
 
     // Merge this partition into the hash table
-    merge_partition(codegen, ht_ptr, directory, mask, partition_head);
+    merge_partition(codegen, ht_ptr, directory, mask, capacity, part_head);
 
     // Move along
     part_idx = codegen->CreateAdd(part_idx, codegen.Const64(1));
-    cond = codegen->CreateICmpULT(part_idx, part_end);
-    range_part_loop.LoopEnd(cond, {part_idx});
+    range_part_loop.LoopEnd(codegen->CreateICmpULT(part_idx, part_end),
+                            {part_idx});
   }
 }
 

@@ -69,7 +69,7 @@ DEFINE_METHOD(peloton::codegen::util::HashTable, ScanState, Next);
 ////////////////////////////////////////////////////////////////////////////////
 
 DEFINE_TYPE(HashTable, "peloton::HashTable", opaque_1, directory, size, mask,
-            opaque_2);
+            opaque_2, num_elems, capacity, opaque_3);
 
 DEFINE_METHOD(peloton::codegen::util, HashTable, Init);
 DEFINE_METHOD(peloton::codegen::util, HashTable, Insert);
@@ -80,6 +80,7 @@ DEFINE_METHOD(peloton::codegen::util, HashTable, ExecutePartitionedScan);
 DEFINE_METHOD(peloton::codegen::util, HashTable, BuildLazy);
 DEFINE_METHOD(peloton::codegen::util, HashTable, ReserveLazy);
 DEFINE_METHOD(peloton::codegen::util, HashTable, MergeLazyUnfinished);
+DEFINE_METHOD(peloton::codegen::util, HashTable, Grow);
 DEFINE_METHOD(peloton::codegen::util, HashTable, Destroy);
 
 }  // namespace codegen

@@ -244,6 +244,11 @@ class HashTable {
    */
   void MergeLazyUnfinished(HashTable &other);
 
+  /**
+   * Resize the hash table
+   */
+  void Grow();
+
   //////////////////////////////////////////////////////////////////////////////
   ///
   /// Scanning
@@ -463,11 +468,6 @@ class HashTable {
    * @return True if the hash table should grow
    */
   bool NeedsToGrow() const { return num_elems_ == capacity_; }
-
-  /**
-   * Resize the hash table
-   */
-  void Grow();
 
   /**
    * Allocate a new Entry object from value storage for a new key-value pair.
