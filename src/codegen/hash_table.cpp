@@ -195,29 +195,25 @@ void HashTable::MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
 
   llvm::Value *null = codegen.NullPtr(entry_type->getPointerTo());
 
-  /*
-   * This function performs a comparison between two input keys. We also use
-   * two output arguments to return pointers to payloads for each input entry.
-   */
   const auto &key_storage = key_storage_;
-  const auto keys_eq = [&entry_type, &key_storage](
-      CodeGen &codegen, llvm::Value *entry_1, llvm::Value *&entry_1_payload,
-      llvm::Value *entry_2, llvm::Value *&entry_2_payload) {
-    // clang-format off
-    std::vector<codegen::Value> entry_1_keys, entry_2_keys;
-    llvm::Value *entry_1_keys_ptr = codegen->CreateConstInBoundsGEP2_32(entry_type, entry_1, 1, 0);
-    llvm::Value *entry_2_keys_ptr = codegen->CreateConstInBoundsGEP2_32(entry_type, entry_2, 1, 0);
-    entry_1_payload = key_storage.LoadValues(codegen, entry_1_keys_ptr, entry_1_keys);
-    entry_2_payload = key_storage.LoadValues(codegen, entry_2_keys_ptr, entry_2_keys);
-    codegen::Value ret = codegen::Value::TestEquality(codegen, entry_1_keys, entry_2_keys);
-    return ret.GetValue();
-    // clang-format on
+  const auto &load_key = [&entry_type, &key_storage](
+      CodeGen &codegen, llvm::Value *entry, std::vector<codegen::Value> &keys) {
+    llvm::Value *entry_keys_ptr =
+        codegen->CreateConstInBoundsGEP2_32(entry_type, entry, 1, 0);
+    return key_storage.LoadValues(codegen, entry_keys_ptr, keys);
   };
 
-  const auto merge_into_bucket = [&null, &keys_eq, &callback](
+  const auto merge_into_bucket = [&entry_type, &null, &load_key, &callback](
       CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *bucket_head_ptr,
       llvm::Value *part_entry, llvm::BasicBlock *found_bb,
       llvm::BasicBlock *grow_bb) {
+
+    // Load the hash value, keys and payload for the part
+    llvm::Value *part_entry_hash = codegen.Load(EntryProxy::hash, part_entry);
+    std::vector<codegen::Value> part_entry_keys;
+    llvm::Value *part_entry_payload =
+        load_key(codegen, part_entry, part_entry_keys);
+
     // Loop over all entries in the bucket
     llvm::Value *bucket_head = codegen->CreateLoad(bucket_head_ptr);
     lang::Loop chain_loop(codegen, codegen->CreateICmpNE(bucket_head, null),
@@ -225,17 +221,18 @@ void HashTable::MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
     {
       llvm::Value *hash_entry = chain_loop.GetLoopVar(0);
       // Are hashes equal?
+      llvm::Value *hash_entry_hash = codegen.Load(EntryProxy::hash, hash_entry);
       llvm::Value *hash_eq =
-          codegen->CreateICmpEQ(codegen.Load(EntryProxy::hash, hash_entry),
-                                codegen.Load(EntryProxy::hash, part_entry));
-      lang::If hash_match(codegen, hash_eq);
+          codegen->CreateICmpEQ(hash_entry_hash, part_entry_hash);
+      lang::If hash_match(codegen, hash_eq, "hashMatch");
       {
         // Are keys equal?
-        llvm::Value *hash_entry_payload = nullptr,
-                    *part_entry_payload = nullptr;
-        llvm::Value *key_eq = keys_eq(codegen, hash_entry, hash_entry_payload,
-                                      part_entry, part_entry_payload);
-        lang::If keys_match(codegen, key_eq);
+        std::vector<codegen::Value> hash_entry_keys;
+        llvm::Value *hash_entry_payload =
+            load_key(codegen, hash_entry, hash_entry_keys);
+        codegen::Value key_eq = codegen::Value::TestEquality(
+            codegen, hash_entry_keys, part_entry_keys);
+        lang::If keys_match(codegen, key_eq.GetValue(), "keyMatch");
         {
           // Full match. Perform merge.
           callback.MergeValues(codegen, hash_entry_payload, part_entry_payload);

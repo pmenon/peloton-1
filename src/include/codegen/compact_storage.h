@@ -74,13 +74,6 @@ class CompactStorage {
   //////////////////////////////////////////////////////////////////////////////
 
   /**
-   * Return the constructed LLVM structure type for this storage format
-   *
-   * @return The generated struct type
-   */
-  llvm::Type *GetStorageType() const { return storage_type_; }
-
-  /**
    * Return the maximum number of bytes needed to store elements of the
    * configured size.
    *
@@ -101,6 +94,19 @@ class CompactStorage {
   friend class UpdateableStorage;
   class BitmapReader;
   class BitmapWriter;
+
+  /**
+   * Return the constructed LLVM structure type for this storage format
+   *
+   * @return The generated struct type
+   */
+  llvm::Type *GetStorageType() const { return storage_type_; }
+
+  /**
+   *
+   * @return
+   */
+  llvm::Type *GetNullBitmapType() const { return null_bitmap_type_; }
 
   /**
    * This internal struct captures metadata about each "entry" in this storage
@@ -136,6 +142,9 @@ class CompactStorage {
 
   // The size of the constructed finalized type
   uint32_t storage_size_;
+
+  // The type of the bitmap
+  llvm::Type *null_bitmap_type_;
 };
 
 }  // namespace codegen

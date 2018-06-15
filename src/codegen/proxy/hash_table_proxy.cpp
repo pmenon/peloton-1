@@ -27,7 +27,7 @@ namespace codegen {
 // is recursive.
 
 llvm::Type *EntryProxy::GetType(CodeGen &codegen) {
-  static const std::string kHashEntryTypeName = "peloton::Entry";
+  static const std::string kHashEntryTypeName = "peloton::HashTable::Entry";
 
   // Check if the hash entry is already defined in the module
   auto *llvm_type = codegen.LookupType(kHashEntryTypeName);
