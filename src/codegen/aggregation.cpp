@@ -222,6 +222,7 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
   // Now compute the next value of the aggregate
   codegen::Value next;
   switch (agg_info.aggregate_type) {
+    case ExpressionType::AGGREGATE_COUNT_STAR:
     case ExpressionType::AGGREGATE_SUM: {
       next = curr.Add(codegen, update);
       break;
@@ -235,7 +236,7 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
       break;
     }
     case ExpressionType::AGGREGATE_COUNT: {
-      // Convert the next update into 0 or 1 depending of if it is NULL
+      // Convert the next update into 0 or 1 depending on if it's NULL
       codegen::type::Type update_type(type::BigInt::Instance(), false);
       codegen::Value raw_update;
       if (update.IsNullable()) {
@@ -248,10 +249,6 @@ void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
 
       // Add to aggregate
       next = curr.Add(codegen, raw_update);
-      break;
-    }
-    case ExpressionType::AGGREGATE_COUNT_STAR: {
-      next = curr.Add(codegen, update);
       break;
     }
     default: {
