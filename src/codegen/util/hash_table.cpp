@@ -211,8 +211,7 @@ const HashTable *HashTable::BuildPartitionedTable(void *query_state,
   part_tables_[partition_id] = table;
 
   // Merge the partition into the table using the compiled merging function
-  merging_func_(query_state, *table, part_heads_, partition_id,
-                partition_id + 1);
+  merging_func_(query_state, *table, &part_heads_[partition_id]);
 
   // Done
   return table;
@@ -230,6 +229,11 @@ void HashTable::TransferPartitions(
   // Flush each thread-local hash table
   for (auto *table : tables) {
     table->FlushToOverflowPartitions();
+  }
+
+  // Move all data over
+  for (auto *table : tables) {
+    table->TransferMemoryBlocks(*this);
   }
 
   if (part_heads_ == nullptr) {
@@ -280,8 +284,6 @@ void HashTable::ExecutePartitionedScan(
       part_ids.push_back(part_idx);
     }
   }
-
-  LOG_DEBUG("Scanning HT with %zu partitions", part_ids.size());
 
   // Distribute work
   {

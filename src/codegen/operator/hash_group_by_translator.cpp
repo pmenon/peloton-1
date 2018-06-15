@@ -243,7 +243,8 @@ void HashGroupByTranslator::ProduceResults::ProcessEntries(
 
 class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
  public:
-  ParallelMerge(const Aggregation &aggregation) : aggregation_(aggregation) {}
+  explicit ParallelMerge(const Aggregation &aggregation)
+      : aggregation_(aggregation) {}
 
   void MergeValues(CodeGen &codegen, llvm::Value *table_values,
                    llvm::Value *new_values) const override {
@@ -346,29 +347,22 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
   auto &codegen = GetCodeGen();
   auto &query_state = GetCompilationContext().GetQueryState();
 
-  // clang-format off
   std::vector<FunctionDeclaration::ArgumentInfo> arg_infos = {
       {"queryState", query_state.GetType()->getPointerTo()},
       {"hashTable", HashTableProxy::GetType(codegen)->getPointerTo()},
-      {"partitions", EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()},
-      {"partBegin", codegen.Int64Type()},
-      {"partEnd", codegen.Int64Type()}
-  };
-  // clang-format on
-  FunctionDeclaration decl(codegen.GetCodeContext(), "mergePartitions",
+      {"partition",
+       EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()}};
+  FunctionDeclaration decl(codegen.GetCodeContext(), "mergePartition",
                            FunctionDeclaration::Visibility::Internal,
                            codegen.VoidType(), arg_infos);
   FunctionBuilder merge_parts(codegen.GetCodeContext(), decl);
   {
     auto *table = merge_parts.GetArgumentByName("hashTable");
-    auto *partitions = merge_parts.GetArgumentByName("partitions");
-    auto *part_begin = merge_parts.GetArgumentByName("partBegin");
-    auto *part_end = merge_parts.GetArgumentByName("partEnd");
+    auto *partition = merge_parts.GetArgumentByName("partition");
 
     // Do the merge
     ParallelMerge parallel_merge(aggregation_);
-    hash_table_.MergePartitions(codegen, table, partitions, part_begin,
-                                part_end, parallel_merge);
+    hash_table_.MergePartition(codegen, table, partition, parallel_merge);
 
     merge_parts.ReturnAndFinish();
   }

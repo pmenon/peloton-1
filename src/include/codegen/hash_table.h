@@ -226,9 +226,8 @@ class HashTable {
   void MergeLazyUnfinished(CodeGen &codegen, llvm::Value *global_ht,
                            llvm::Value *local_ht) const;
 
-  void MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
-                       llvm::Value *partitions, llvm::Value *part_begin,
-                       llvm::Value *part_end, MergeCallback &callback) const;
+  void MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
+                      llvm::Value *partitions, MergeCallback &callback) const;
 
   virtual void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
                        IterateCallback &callback) const;

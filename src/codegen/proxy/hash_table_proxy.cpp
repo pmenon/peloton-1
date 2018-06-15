@@ -68,8 +68,8 @@ DEFINE_METHOD(peloton::codegen::util::HashTable, ScanState, Next);
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
-DEFINE_TYPE(HashTable, "peloton::HashTable", opaque_1, directory, size, mask,
-            opaque_2, num_elems, capacity, opaque_3);
+DEFINE_TYPE(HashTable, "peloton::HashTable", opaque_1, directory, dir_size,
+            mask, opaque_2, num_elems, capacity, opaque_3);
 
 DEFINE_METHOD(peloton::codegen::util, HashTable, Init);
 DEFINE_METHOD(peloton::codegen::util, HashTable, Insert);

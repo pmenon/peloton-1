@@ -28,20 +28,20 @@ PROXY(Entry) {
 /// The proxy for util::HashTable
 PROXY(HashTable) {
   // clang-format off
-  DECLARE_MEMBER(0, char[sizeof(void *) +
-                         sizeof(uint32_t) +
-                         sizeof(uint32_t)],
+  DECLARE_MEMBER(0, char[sizeof(void *) +                   // Memory pool
+                         sizeof(uint32_t) +                 // Key size
+                         sizeof(uint32_t)],                 // Value size
                  opaque_1);
-  DECLARE_MEMBER(1, util::HashTable::Entry **, directory);
-  DECLARE_MEMBER(2, uint64_t, size);
-  DECLARE_MEMBER(3, uint64_t, mask);
-  DECLARE_MEMBER(4, char[sizeof(util::HashTable) +      // Memory block
-                         sizeof(void *) +               // Next free entry
-                         sizeof(uint64_t)],             // Available bytes
+  DECLARE_MEMBER(1, util::HashTable::Entry **, directory);  // Directory
+  DECLARE_MEMBER(2, uint64_t, dir_size);                    // Directory size
+  DECLARE_MEMBER(3, uint64_t, mask);                        // Mask
+  DECLARE_MEMBER(4, char[sizeof(void *) +                   // Memory block
+                         sizeof(void *) +                   // Next free entry
+                         sizeof(uint64_t)],                 // Available bytes
                  opaque_2);
   DECLARE_MEMBER(5, uint64_t, num_elems);
   DECLARE_MEMBER(6, uint64_t, capacity);
-  DECLARE_MEMBER(6, char[sizeof(void *) +         // Merging function
+  DECLARE_MEMBER(7, char[sizeof(void *) +         // Merging function
                          sizeof(void *) +         // Partition heads
                          sizeof(void *) +         // Partition tails
                          sizeof(void *) +         // Partition hash tables
