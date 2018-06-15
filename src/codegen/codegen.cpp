@@ -180,7 +180,7 @@ llvm::Value *CodeGen::Printf(const std::string &format,
   return CallFunc(printf_fn, printf_args);
 }
 
-llvm::Value *CodeGen::Memcmp(llvm::Value *ptr1, llvm::Value *ptr2,
+llvm::Value *CodeGen::Memcmp(llvm::Value *ptr_1, llvm::Value *ptr_2,
                              llvm::Value *len) {
   static constexpr char kMemcmpFnName[] = "memcmp";
   auto *memcmp_fn = LookupBuiltin(kMemcmpFnName).first;
@@ -207,7 +207,7 @@ llvm::Value *CodeGen::Memcmp(llvm::Value *ptr1, llvm::Value *ptr2,
   }
 
   // Call memcmp()
-  return CallFunc(memcmp_fn, {ptr1, ptr2, len});
+  return CallFunc(memcmp_fn, {ptr_1, ptr_2, len});
 }
 
 llvm::Value *CodeGen::Sqrt(llvm::Value *val) {

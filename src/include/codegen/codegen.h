@@ -134,8 +134,7 @@ class CodeGen {
   //===--------------------------------------------------------------------===//
   llvm::Value *Printf(const std::string &format,
                       const std::vector<llvm::Value *> &args);
-  llvm::Value *Memcmp(llvm::Value *ptr1, llvm::Value *ptr2,
-                      llvm::Value *len);
+  llvm::Value *Memcmp(llvm::Value *ptr_1, llvm::Value *ptr_2, llvm::Value *len);
   llvm::Value *Sqrt(llvm::Value *val);
 
   //===--------------------------------------------------------------------===//
