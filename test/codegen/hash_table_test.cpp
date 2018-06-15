@@ -254,6 +254,13 @@ TEST_F(HashTableTest, VectorizedScanTest) {
     uint32_t selection_vector[vec_size] = {0};
     codegen::util::HashTable::ScanState scan(table, selection_vector, vec_size);
 
+    // Make sure the scanner is invalid until the first call to Next()
+    EXPECT_EQ(0, scan.CurrentBatchSize());
+
+    scan.Next();
+
+    EXPECT_GT(scan.CurrentBatchSize(), 0);
+
     uint32_t entry_count = 0;
     do {
       auto *entries = scan.Entries();

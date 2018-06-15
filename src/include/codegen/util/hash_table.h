@@ -276,7 +276,7 @@ class HashTable {
      *
      * @return True if there is data to scan. False otherwise.
      */
-    static bool Init(ScanState &scan_state, const HashTable &table,
+    static void Init(ScanState &scan_state, const HashTable &table,
                      uint32_t *sel, uint32_t sel_size);
 
     /**

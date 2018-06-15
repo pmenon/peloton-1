@@ -535,7 +535,7 @@ HashTable::ScanState::ScanState(const HashTable &table, uint32_t *sel,
       next_(table_.directory_[0]),
       size_(0),
       sel_size_(sel_size),
-      done_(table_.num_elems_ == 0) {
+      done_(true) {
   // Allocate space
   entries_ = static_cast<Entry **>(
       table_.memory_.Allocate(sel_size_ * sizeof(Entry *)));
@@ -543,9 +543,6 @@ HashTable::ScanState::ScanState(const HashTable &table, uint32_t *sel,
   // Fill selection vector once since we only populate the entries vector with
   // valid entries
   std::iota(sel_, sel_ + sel_size_, 0);
-
-  // Move scanner
-  Next();
 }
 
 HashTable::ScanState::~ScanState() {
@@ -555,11 +552,10 @@ HashTable::ScanState::~ScanState() {
   }
 }
 
-bool HashTable::ScanState::Init(HashTable::ScanState &scan_state,
+void HashTable::ScanState::Init(HashTable::ScanState &scan_state,
                                 const HashTable &table, uint32_t *sel,
                                 uint32_t sel_size) {
   new (&scan_state) ScanState(table, sel, sel_size);
-  return scan_state.done_;
 }
 
 void HashTable::ScanState::Destroy(HashTable::ScanState &scan_state) {

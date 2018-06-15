@@ -490,16 +490,16 @@ void HashTable::VectorizedIterate(
       codegen.AllocateVariable(ScanStateProxy::GetType(codegen), "htScanState");
 
   // Initialize it
-  auto *done =
-      codegen.Call(ScanStateProxy::Init,
-                   {scan_state, ht_ptr, selection_vector.GetVectorPtr(),
-                    codegen.Const32(selection_vector.GetCapacity())});
+  codegen.Call(ScanStateProxy::Init,
+               {scan_state, ht_ptr, selection_vector.GetVectorPtr(),
+                codegen.Const32(selection_vector.GetCapacity())});
 
   // Table accessor
   llvm::Value *entries = codegen.Load(ScanStateProxy::entries, scan_state);
   TableAccess table_access(key_storage_, entries);
 
   // Loop while the scan state is valid
+  llvm::Value *done = codegen.Call(ScanStateProxy::Next, {scan_state});
   lang::Loop loop(codegen, codegen->CreateNot(done), {});
   {
     auto *num_elems = codegen.Load(ScanStateProxy::size, scan_state);
