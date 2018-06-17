@@ -27,14 +27,13 @@ namespace codegen {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
+/**
+ * This is a helper class that incrementally constructs a bitmap. This is used
+ * to write the NULL bitmap for the compact storage.
+ */
 class CompactStorage::BitmapWriter {
  public:
-  /**
-   *
-   * @param codegen
-   * @param storage
-   * @param storage_ptr
-   */
+  /// Constructor
   BitmapWriter(CodeGen &codegen, const CompactStorage &storage,
                llvm::Value *storage_ptr)
       : bitmap_ptr_(nullptr) {
@@ -59,10 +58,11 @@ class CompactStorage::BitmapWriter {
   }
 
   /**
+   * Set a specific bit in the bitmap to the provided value
    *
-   * @param codegen
-   * @param bit_idx
-   * @param bit_val
+   * @param codegen The codegen instance
+   * @param bit_idx The index in the bitmap whose value we set
+   * @param bit_val The value of the bit to set
    */
   void SetBit(CodeGen &codegen, uint32_t bit_idx, llvm::Value *bit_val) {
     PELOTON_ASSERT(bit_val->getType() == codegen.BoolType());
@@ -78,8 +78,10 @@ class CompactStorage::BitmapWriter {
   }
 
   /**
+   * Write the entire bitmap back to memory. The address of the bitmap was
+   * computed in the constructor.
    *
-   * @param codegen
+   * @param codegen The codegen instance.
    */
   void Write(CodeGen &codegen) const {
     for (uint32_t idx = 0; idx < bytes_.size(); idx++) {
@@ -107,14 +109,13 @@ class CompactStorage::BitmapWriter {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
+/**
+ * This is a helper class used to read and interpret the NULL bitmap associated
+ * and stored contiguously with data stored using CompactStorage.
+ */
 class CompactStorage::BitmapReader {
  public:
-  /**
-   *
-   * @param codegen
-   * @param storage
-   * @param storage_ptr
-   */
+  /// Constructor
   BitmapReader(CodeGen &codegen, const CompactStorage &storage,
                llvm::Value *storage_ptr)
       : bitmap_ptr_(nullptr) {
@@ -139,10 +140,11 @@ class CompactStorage::BitmapReader {
   }
 
   /**
+   * Read the value of the bit at the given index.
    *
-   * @param codegen
-   * @param bit_idx
-   * @return
+   * @param codegen The codegen instance
+   * @param bit_idx The index of the bit whose value to read
+   * @return The boolean value of the bit
    */
   llvm::Value *GetBit(CodeGen &codegen, uint32_t bit_idx) {
     uint32_t byte_pos = bit_idx >> 3u;
