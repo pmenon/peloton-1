@@ -23,7 +23,8 @@
 namespace peloton {
 namespace threadpool {
 
-using TaskQueue = peloton::LockFreeQueue<std::function<void()>>;
+using Task = std::function<void(uint32_t)>;
+using TaskQueue = peloton::LockFreeQueue<Task>;
 
 /**
  * @brief A worker pool that maintains a group of worker threads. This pool is

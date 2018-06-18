@@ -32,8 +32,8 @@ class MonoQueuePool {
 
   void Shutdown();
 
-  template <typename F>
-  void SubmitTask(const F &func);
+  void SubmitTask(std::function<void(uint32_t)> func);
+  void SubmitTask(std::function<void()> func);
 
   uint32_t NumWorkers() const { return worker_pool_.NumWorkers(); }
 
@@ -78,12 +78,19 @@ inline void MonoQueuePool::Shutdown() {
   is_running_ = false;
 }
 
-template <typename F>
-inline void MonoQueuePool::SubmitTask(const F &func) {
+inline void MonoQueuePool::SubmitTask(std::function<void(uint32_t)> func) {
   if (!is_running_) {
     Startup();
   }
   task_queue_.Enqueue(std::move(func));
+}
+
+inline void MonoQueuePool::SubmitTask(std::function<void()> func) {
+  auto wrapper =
+      std::bind([](std::function<void()> inner_func,
+                   UNUSED_ATTRIBUTE uint32_t thread_id) { inner_func(); },
+                std::move(func), std::placeholders::_1);
+  SubmitTask(wrapper);
 }
 
 inline MonoQueuePool &MonoQueuePool::GetInstance() {

@@ -19,8 +19,8 @@ namespace threadpool {
 
 namespace {
 
-void WorkerFunc(std::string thread_name, std::atomic_bool *is_running,
-                TaskQueue *task_queue) {
+void WorkerFunc(std::string thread_name, uint32_t thread_id,
+                std::atomic_bool *is_running, TaskQueue *task_queue) {
   constexpr auto kMinPauseTime = std::chrono::microseconds(1);
   constexpr auto kMaxPauseTime = std::chrono::microseconds(1000);
 
@@ -28,13 +28,13 @@ void WorkerFunc(std::string thread_name, std::atomic_bool *is_running,
 
   auto pause_time = kMinPauseTime;
   while (is_running->load() || !task_queue->IsEmpty()) {
-    std::function<void()> task;
+    Task task;
     if (!task_queue->Dequeue(task)) {
       // Polling with exponential back-off
       std::this_thread::sleep_for(pause_time);
       pause_time = std::min(pause_time * 2, kMaxPauseTime);
     } else {
-      task();
+      task(thread_id);
       pause_time = kMinPauseTime;
     }
   }
@@ -54,9 +54,10 @@ WorkerPool::WorkerPool(const std::string &pool_name, uint32_t num_workers,
 void WorkerPool::Startup() {
   bool running = false;
   if (is_running_.compare_exchange_strong(running, true)) {
-    for (size_t i = 0; i < num_workers_; i++) {
-      std::string name = pool_name_ + "-worker-" + std::to_string(i);
-      workers_.emplace_back(WorkerFunc, name, &is_running_, &task_queue_);
+    // Dense TID range
+    for (size_t tid = 0; tid < num_workers_; tid++) {
+      std::string name = pool_name_ + "-worker-" + std::to_string(tid);
+      workers_.emplace_back(WorkerFunc, name, tid, &is_running_, &task_queue_);
     }
   }
 }
