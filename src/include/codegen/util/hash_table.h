@@ -541,6 +541,7 @@ class HashTable {
   Entry **part_tails_;
   HashTable **part_tables_;
   uint64_t flush_threshold_;
+  uint64_t part_shift_bits_;
 
   // Stats
   Stats stats_;

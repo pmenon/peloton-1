@@ -46,7 +46,8 @@ PROXY(HashTable) {
                          sizeof(void *) +         // Partition tails
                          sizeof(void *) +         // Partition hash tables
                          sizeof(uint64_t) +       // Flush threshold
-                         sizeof(util::HashTable::Stats)],   // Flush threshold
+                         sizeof(uint64_t) +       // Partition shift bits
+                         sizeof(util::HashTable::Stats)],   // Statistics
                  opaque_3);
   // clang-format on
   DECLARE_TYPE;

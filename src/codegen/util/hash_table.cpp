@@ -47,7 +47,8 @@ HashTable::HashTable(::peloton::type::AbstractPool &memory, uint32_t key_size,
       part_heads_(nullptr),
       part_tails_(nullptr),
       part_tables_(nullptr),
-      flush_threshold_(capacity_) {
+      flush_threshold_(capacity_),
+      part_shift_bits_(CountLeadingZeroes(kDefaultNumPartitions - 1)) {
   // Upon creation, we allocate room for kDefaultNumElements in the hash table.
   // We assume 50% load factor on the directory, thus the directory size is
   // twice the number of elements.
@@ -168,8 +169,7 @@ void HashTable::FlushToOverflowPartitions() {
       Entry *next = entry->next;
 
       // Move entry into appropriate partition
-      // TODO: partition ID computation
-      uint64_t part_idx = (entry->hash >> 8ul) & 0x1ff;
+      uint64_t part_idx = (entry->hash >> part_shift_bits_);
       entry->next = part_heads_[part_idx];
       part_heads_[part_idx] = entry;
       if (part_tails_[part_idx] == nullptr) {
@@ -477,8 +477,7 @@ HashTable::Entry *HashTable::NewEntry(uint64_t hash) {
   // Do we have enough room to store a new entry in the current memory block?
   if (entry_size > available_bytes_) {
     uint64_t block_size = sizeof(MemoryBlock) + (entry_size * kNumBlockElems);
-    auto *new_block =
-        reinterpret_cast<MemoryBlock *>(memory_.Allocate(block_size));
+    auto *new_block = static_cast<MemoryBlock *>(memory_.Allocate(block_size));
     new_block->next = block_;
     block_ = new_block;
     next_entry_ = new_block->data;
