@@ -125,7 +125,9 @@ class Sorter {
 
   /** Iterators */
   std::vector<char *>::iterator begin() { return tuples_.begin(); }
+  std::vector<char *>::const_iterator begin() const { return tuples_.begin(); }
   std::vector<char *>::iterator end() { return tuples_.end(); }
+  std::vector<char *>::const_iterator end() const { return tuples_.end(); }
 
  private:
   /**
