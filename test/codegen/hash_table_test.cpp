@@ -84,7 +84,7 @@ TEST_F(HashTableTest, UniqueKeysTest) {
 
   // Insert keys
   for (uint32_t i = 0; i < to_insert; i++) {
-    Key k{1, i};
+    Key k(1, i);
     Value v = {.v1 = k.k2, .v2 = 2, .v3 = 3, .v4 = c1};
     table.TypedInsert(k.Hash(), k, v);
 
@@ -96,13 +96,13 @@ TEST_F(HashTableTest, UniqueKeysTest) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count,
-                                             &c1](const Value &v) {
-      EXPECT_EQ(key.k2, v.v1)
-          << "Value's [v1] found in table doesn't match insert key";
-      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-      count++;
-    };
+    std::function<void(const Value &v)> f =
+        [&key, &count, &c1](const Value &v) {
+          EXPECT_EQ(key.k2, v.v1)
+              << "Value's [v1] found in table doesn't match insert key";
+          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+          count++;
+        };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(1, count) << "Found duplicate keys in unique key test";
   }
@@ -113,12 +113,9 @@ TEST_F(HashTableTest, BuildEmptyHashTable) {
 
   std::vector<Key> keys;
 
-  // Insert keys
+  // Create keys, but do **NOT** insert into hash table
   for (uint32_t i = 0; i < 10; i++) {
-    Key k{1, i};
-    // do NOT insert into hash table
-
-    keys.emplace_back(k);
+    keys.emplace_back(1, i);
   }
 
   EXPECT_EQ(0, table.NumElements());
@@ -126,12 +123,12 @@ TEST_F(HashTableTest, BuildEmptyHashTable) {
   // Build lazy
   table.BuildLazy();
 
-  // Lookups should succeed
+  // **ALL** lookups should fail
   for (const auto &key : keys) {
     std::function<void(const Value &v)> f =
         [](UNUSED_ATTRIBUTE const Value &v) {};
-    auto ret = table.TypedProbe(key.Hash(), key, f);
-    EXPECT_EQ(false, ret);
+    auto found = table.TypedProbe(key.Hash(), key, f);
+    EXPECT_EQ(false, found);
   }
 }
 
@@ -149,7 +146,7 @@ TEST_F(HashTableTest, DuplicateKeysTest) {
   for (uint32_t i = 0; i < to_insert; i++) {
     // Choose a random number of duplicates to insert. Store this in the k1.
     uint32_t num_dups = 1 + (rand() % max_dups);
-    Key k{num_dups, i};
+    Key k(num_dups, i);
 
     // Duplicate insertion
     for (uint32_t dup = 0; dup < num_dups; dup++) {
@@ -166,13 +163,13 @@ TEST_F(HashTableTest, DuplicateKeysTest) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count,
-                                             &c1](const Value &v) {
-      EXPECT_EQ(key.k2, v.v1)
-          << "Value's [v1] found in table doesn't match insert key";
-      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-      count++;
-    };
+    std::function<void(const Value &v)> f =
+        [&key, &count, &c1](const Value &v) {
+          EXPECT_EQ(key.k2, v.v1)
+              << "Value's [v1] found in table doesn't match insert key";
+          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+          count++;
+        };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(key.k1, count) << key << " found " << count << " dups ...";
   }
@@ -192,7 +189,7 @@ TEST_F(HashTableTest, LazyInsertsWithDupsTest) {
   for (uint32_t i = 0; i < to_insert; i++) {
     // Choose a random number of duplicates to insert. Store this in the k1.
     uint32_t num_dups = 1 + (rand() % max_dups);
-    Key k{num_dups, i};
+    Key k(num_dups, i);
 
     // Duplicate insertion
     for (uint32_t dup = 0; dup < num_dups; dup++) {
@@ -214,13 +211,13 @@ TEST_F(HashTableTest, LazyInsertsWithDupsTest) {
   // Lookups should succeed
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f = [&key, &count,
-                                             &c1](const Value &v) {
-      EXPECT_EQ(key.k2, v.v1)
-          << "Value's [v1] found in table doesn't match insert key";
-      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-      count++;
-    };
+    std::function<void(const Value &v)> f =
+        [&key, &count, &c1](const Value &v) {
+          EXPECT_EQ(key.k2, v.v1)
+              << "Value's [v1] found in table doesn't match insert key";
+          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+          count++;
+        };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(key.k1, count) << key << " found " << count << " dups ...";
   }
@@ -244,10 +241,15 @@ TEST_F(HashTableTest, VectorizedScanTest) {
     std::unordered_map<Key, Value, KeyHasher> ref_map;
 
     for (uint32_t i = 0; i < num_keys; i++) {
+      // The key/value to insert
       Key k(i, 0);
-      Value v = {0, 1, 2, 3};
+      Value v = {.v1 = 0, .v2 = 1, .v3 = 2, .v4 = 3};
+
+      // Insert into our hash table
       table.TypedInsert(k.Hash(), k, v);
-      ref_map.insert(std::make_pair(k, v));
+
+      // Insert into reference table
+      ref_map.emplace(k, v);
     }
 
     constexpr uint32_t vec_size = 1024;
@@ -305,7 +307,7 @@ TEST_F(HashTableTest, VectorizedScanTest) {
     for (uint32_t bucket = 0; bucket < num_buckets_to_insert_into; bucket++) {
       for (uint32_t i = 0; i < vec_size / 4; i++) {
         Key k(bucket, 0);
-        Value v = {0, 1, 2, 3};
+        Value v = {.v1 = 0, .v2 = 1, .v3 = 2, .v4 = 3};
         table.TypedInsert(k.Hash(), k, v);
         num_keys++;
       }
@@ -317,7 +319,7 @@ TEST_F(HashTableTest, VectorizedScanTest) {
     codegen::util::HashTable::ScanState scan(table, selection_vector, vec_size);
 
     uint32_t entry_count = 0;
-    do {
+    while (!scan.Next()) {
       auto *entries = scan.Entries();
       for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
         const Key *k;
@@ -325,7 +327,7 @@ TEST_F(HashTableTest, VectorizedScanTest) {
         entries[i]->GetKV(k, v);
         entry_count++;
       }
-    } while (!scan.Next());
+    }
 
     // Make sure the counts are the same
     EXPECT_EQ(num_keys, entry_count);
@@ -442,23 +444,11 @@ TEST_F(HashTableTest, ParallelMergeTest) {
   }
 }
 
-namespace {
-
-void PartitionedUpdateFunction(bool exists, Value *curr_val) {
-  if (exists) {
-    curr_val->v1++;
-  } else {
-    *curr_val = {1, 2, 3, 4};
-  }
-}
-
-}  // namespace
-
 TEST_F(HashTableTest, InsertPartitionedTest) {
   codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
 
-  const uint32_t num_groups = static_cast<uint32_t>(table.FlushThreshold() + 9);
-  const uint32_t to_insert = 50000;
+  const auto num_groups = static_cast<uint32_t>(table.FlushThreshold() + 9);
+  const auto to_insert = uint32_t(50000);
 
   std::vector<Key> keys;
 
@@ -469,10 +459,14 @@ TEST_F(HashTableTest, InsertPartitionedTest) {
 
   /// Insert partitioned
   for (uint32_t i = 0; i < to_insert; i++) {
-    table.TypedUpsert<true, Key, Value>(
-        keys[i].Hash(), keys[i], [](bool exists, Value *curr) {
-          PartitionedUpdateFunction(exists, curr);
-        });
+    table.TypedUpsert<true, Key, Value>(keys[i].Hash(), keys[i],
+                                        [](bool exists, Value *curr) {
+                                          if (exists) {
+                                            curr->v1++;
+                                          } else {
+                                            *curr = {1, 2, 3, 4};
+                                          }
+                                        });
   }
 
   // We should have flushed at least once
@@ -482,13 +476,28 @@ TEST_F(HashTableTest, InsertPartitionedTest) {
   EXPECT_FALSE(table.NumElements() > num_groups);
 }
 
-#if 0
 TEST_F(HashTableTest, ParallelPartitionedBuild) {
   constexpr uint32_t num_threads = 4;
 
-  // Vary groups between 10, 100, 1000
-  const uint32_t num_keys = 100000;
-  for (const uint32_t num_groups : {10u, 100u, 1000u}) {
+  /*
+   * This test mimics an aggregation by inserting upsert-ing elements into a
+   * hash table. We vary the number of groups between 10 and 10,000, and each
+   * aggregate is just a count(*) on the first element of the upsert-ed value
+   * (i.e., Value.v1).
+   *
+   * We build 'num_threads' thread-local hash tables that each contain exactly
+   * 'num_groups' groups, whose count will be 'scale_factor'. Thus, the global
+   * aggregate total will be 'scale_factor' x 'num_threads'.
+   *
+   * In this test, we first construct thread-local hash tables with the correct
+   * groups and aggregate counts. We then transfer thread-local table data to a
+   * global table. We scan the global table, which merges the thread-local table
+   * into a global view. We ensure the global aggregate counts match and ensure
+   * we only see 'num_groups' unique grouping keys globally.
+   */
+
+  constexpr uint32_t scale_factor = 5;
+  for (const uint32_t num_groups : {10u, 100u, 1000u, 10000u}) {
     executor::ExecutorContext ctx(nullptr);
     codegen::util::HashTable global_table(*ctx.GetPool(), sizeof(Key),
                                           sizeof(Value));
@@ -498,70 +507,124 @@ TEST_F(HashTableTest, ParallelPartitionedBuild) {
     ctx.GetThreadStates().Allocate(num_threads);
 
     //////////////////////////////////////////////////////////////////
-    /// Do parallel (partitioned) inserts into thread-local tables
+    /// Do partitioned inserts into each thread-local table
     //////////////////////////////////////////////////////////////////
     {
-      auto fn = [&num_threads, &num_groups, &ctx](uint64_t tid) {
+      for (uint32_t tid = 0; tid < num_threads; tid++) {
         // First, initialize thread-local table
+        auto &thread_states = ctx.GetThreadStates();
         auto *table =
-            ctx.GetThreadStates().AccessThreadStateAs<codegen::util::HashTable>(
-                tid);
+            thread_states.AccessThreadStateAs<codegen::util::HashTable>(tid);
         codegen::util::HashTable::Init(*table, ctx, sizeof(Key), sizeof(Value));
 
         // Insert
-        for (uint32_t i = 0; i < num_keys / num_threads; i++) {
-          Key group_key = {i % num_groups, i % num_groups};
-          table->TypedUpsert<true, Key, Value>(
-              group_key.Hash(), group_key, [](bool exists, Value *curr) {
-                PartitionedUpdateFunction(exists, curr);
-              });
+        uint32_t num_keys = scale_factor * num_groups;
+        for (uint32_t i = 0; i < num_keys; i++) {
+          Key group_key(i % num_groups, i % num_groups);
+          table->TypedUpsert<true, Key, Value>(group_key.Hash(), group_key,
+                                               [](bool exists, Value *curr) {
+                                                 if (exists) {
+                                                   curr->v1++;
+                                                 } else {
+                                                   *curr = {1, 2, 3, 4};
+                                                 }
+                                               });
         }
-      };
-
-      // Launch thread-local population in parallel
-      LaunchParallelTest(num_threads, fn);
+      }
     }
 
     //////////////////////////////////////////////////////////////////
     /// Transfer partitions to global table
     //////////////////////////////////////////////////////////////////
     {
-      auto merge_fn = [](codegen::util::HashTable &table,
-                         codegen::util::HashTable::Entry **partitions,
-                         uint64_t part_begin, uint64_t part_end) {
-        (void)table;
-        for (uint64_t pid = part_begin; pid < part_end; pid++) {
-          auto *entry = partitions[pid];
-          while (entry != nullptr) {
-          }
-        }
-      };
-
       // The "0" is for the offset of the hash table in the state. It's 0
       // because it's the only element in the state and it's situated in the
       // first slot.
-      global_table.TransferPartitions(ctx.GetThreadStates(), 0, merge_fn);
+      global_table.TransferPartitions(ctx.GetThreadStates(), 0);
+
+      // Check
+      auto &thread_states = ctx.GetThreadStates();
+      for (uint32_t tid = 0; tid < num_threads; tid++) {
+        auto *tl_table =
+            thread_states.AccessThreadStateAs<codegen::util::HashTable>(tid);
+        EXPECT_EQ(0, tl_table->NumElements());
+      }
+
+      // Reset
+      thread_states.Reset(0);
     }
 
     //////////////////////////////////////////////////////////////////
     /// Final scan to check results
     //////////////////////////////////////////////////////////////////
     {
-      std::mutex mutex;
-      auto scan_fn = [](void *query_state, void *thread_state,
-                        const codegen::util::HashTable &table) {
-        (void)thread_state;
-        (void)table;
-        std::mutex *m = reinterpret_cast<std::mutex *>(query_state);
-        (void)m;
-
+      class State {
+       private:
+        std::mutex mutex;
+        uint32_t num_groups;
+       public:
+        const uint32_t agg_val;
+        explicit State(uint32_t v) : num_groups(0), agg_val(v) {}
+        void IncGroupCount() {
+          std::lock_guard<std::mutex> lock(mutex);
+          num_groups++;
+        }
+        uint32_t NumGroups() const { return num_groups; }
       };
-      global_table.ExecutePartitionedScan(static_cast<void *>(&mutex),
-                                          ctx.GetThreadStates(), scan_fn);
+      State state(scale_factor * num_threads);
+
+      /*
+       * Scan a given partition of the hash table. We just want to check that
+       * the aggregate count is as expected, and increment the number of groups
+       * we've seen.
+       */
+      auto scan_fn =
+          [](void *query_state, void *, const codegen::util::HashTable &table) {
+            constexpr uint32_t vec_size = 512;
+            // Pull out state
+            auto *s = reinterpret_cast<State *>(query_state);
+            // Start scan
+            uint32_t vec[vec_size] = {0};
+            codegen::util::HashTable::ScanState scan(table, vec, vec_size);
+            while (!scan.Next()) {
+              auto *entries = scan.Entries();
+              for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
+                const Key *k;
+                const Value *v;
+                entries[i]->GetKV(k, v);
+                EXPECT_EQ(s->agg_val, v->v1);
+                s->IncGroupCount();
+              }
+            }
+          };
+
+      // Given a linked-list overflow partition, build a single hash table
+      auto partitioned_build = [](void *, codegen::util::HashTable &table,
+                                  codegen::util::HashTable::Entry **partition) {
+        const Key *k;
+        const Value *v;
+        for (auto *entry = *partition; entry != nullptr; entry = entry->next) {
+          entry->GetKV(k, v);
+          table.TypedUpsert<false, Key, Value>(entry->hash, *k,
+                                               [&v](bool found, Value *curr) {
+                                                 if (found) {
+                                                   curr->v1 += v->v1;
+                                                 } else {
+                                                   *curr = *v;
+                                                 }
+                                               });
+        }
+      };
+
+      // Execute scan over the global table
+      codegen::util::HashTable::ExecutePartitionedScan(
+          static_cast<void *>(&state), ctx.GetThreadStates(), global_table,
+          partitioned_build, scan_fn);
+
+      EXPECT_EQ(num_groups, state.NumGroups());
     }
   }
 }
-#endif
 
 }  // namespace test
 }  // namespace peloton

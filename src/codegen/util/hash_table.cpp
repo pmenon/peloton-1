@@ -261,26 +261,25 @@ void HashTable::TransferPartitions(
 
 void HashTable::ExecutePartitionedScan(
     void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-    HashTable *table, MergingFunction merge_func,
-    PartitionedScanFunction scan_func) {
+    HashTable &table, MergingFunction merge_func, ScanFunction scan_func) {
   // Set the merging function
   PELOTON_ASSERT(merge_func != nullptr);
-  table->merging_func_ = merge_func;
+  table.merging_func_ = merge_func;
 
   // Allocate partition tables array
-  PELOTON_ASSERT(table->part_tables_ == nullptr);
+  PELOTON_ASSERT(table.part_tables_ == nullptr);
   {
     auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
-    table->part_tables_ =
-        static_cast<HashTable **>(table->memory_.Allocate(num_bytes));
-    PELOTON_MEMSET(table->part_tables_, 0, num_bytes);
+    table.part_tables_ =
+        static_cast<HashTable **>(table.memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(table.part_tables_, 0, num_bytes);
   }
 
-  // Count number of partitions to build
+  // Collect all the overflow partitions that have data that needs to merged
   std::vector<uint32_t> part_ids;
   part_ids.reserve(kDefaultNumPartitions);
   for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
-    if (table->part_heads_[part_idx] != nullptr) {
+    if (table.part_heads_[part_idx] != nullptr) {
       part_ids.push_back(part_idx);
     }
   }
@@ -301,14 +300,18 @@ void HashTable::ExecutePartitionedScan(
      * over partitions. Only spawn work for those partitions that have data.
      */
     for (const auto &part_idx : part_ids) {
-      worker_pool.SubmitTask([&table, &query_state, &thread_states, scan_func,
-                              &latch, part_idx]() {
-        auto *table_part = table->BuildPartitionedTable(query_state, part_idx);
+      worker_pool.SubmitTask([&table, &query_state, &thread_states, &scan_func,
+                              &latch, part_idx](uint32_t thread_id) {
+        // Build a hash table over the given partition
+        auto *table_part = table.BuildPartitionedTable(query_state, part_idx);
 
-        // TODO: thread states
-        scan_func(query_state, thread_states.AccessThreadState(0), *table_part);
+        // Scan hash table we built
+        PELOTON_ASSERT(thread_id < thread_states.NumThreads() &&
+                       "Spawned on thread whose ID was not in ThreadStates.");
+        auto *thread_state = thread_states.AccessThreadState(thread_id);
+        scan_func(query_state, thread_state, *table_part);
 
-        // Count down
+        // Count down the latch
         latch.CountDown();
       });
     }

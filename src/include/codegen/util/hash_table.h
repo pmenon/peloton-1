@@ -126,9 +126,8 @@ class HashTable {
   using MergingFunction = void (*)(void *query_state, HashTable &table,
                                    HashTable::Entry **partition);
 
-  using PartitionedScanFunction = void (*)(void *query_state,
-                                           void *thread_state,
-                                           const HashTable &table);
+  using ScanFunction = void (*)(void *query_state, void *thread_state,
+                                const HashTable &table);
 
   /**
    * Insert a new key-value pair whose key has the provided hash value. This
@@ -178,8 +177,7 @@ class HashTable {
    */
   static void ExecutePartitionedScan(
       void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-      HashTable *table, MergingFunction merge_func,
-      PartitionedScanFunction scan_func);
+      HashTable &table, MergingFunction merge_func, ScanFunction scan_func);
 
   //////////////////////////////////////////////////////////////////////////////
   ///
