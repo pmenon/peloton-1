@@ -118,8 +118,7 @@ class ParallelSortHelper {
   ParallelSortHelper(uint32_t num_sorters,
                      codegen::util::Sorter::ComparisonFunction func,
                      uint32_t tuple_size)
-      : ctx_(nullptr),
-        main_(Pool(), func, tuple_size) {
+      : ctx_(nullptr), main_(Pool(), func, tuple_size) {
     // The main sorter is setup (above). Now, set up each thread-local sorter.
     auto &thread_states = GetThreadStates();
     thread_states.Reset(sizeof(codegen::util::Sorter));
@@ -195,6 +194,34 @@ TEST_F(SorterTest, DISABLED_ParallelSortEmptyTest) {
 
   /// Check result size
   EXPECT_EQ(0, helper.GetMainSorter().NumTuples());
+}
+
+TEST_F(SorterTest, DISABLED_ParallelSortSmallTest) {
+  constexpr uint32_t num_threads = 4;
+
+  //////////////////////////////////////////////////////////
+  /// A simple test where sorters have 2 elements each
+  //////////////////////////////////////////////////////////
+  ParallelSortHelper helper(num_threads, CompareColBAsc, sizeof(TestTuple));
+
+  uint32_t total_num_inserts = 0;
+
+  bool no_insert = false;
+  for (auto *sorter : helper.GetTLSorters()) {
+    uint32_t to_insert = no_insert ? 0 : 2;
+    LoadSorter(*sorter, to_insert);
+    no_insert = !no_insert;
+    total_num_inserts += to_insert;
+  }
+
+  /// Sort
+  helper.SortParallel();
+
+  /// Should be sorted
+  CheckSorted(helper.GetMainSorter(), true);
+
+  /// Check result size
+  EXPECT_EQ(total_num_inserts, helper.GetMainSorter().NumTuples());
 }
 
 TEST_F(SorterTest, SimpleParallelSortTest) {
