@@ -21,12 +21,6 @@
 namespace peloton {
 namespace codegen {
 
-namespace {
-bool IsValidStorage(uint32_t storage_index) {
-  return storage_index < std::numeric_limits<uint32_t>::max();
-}
-}  // namespace
-
 void Aggregation::Setup(
     CodeGen &codegen,
     const std::vector<planner::AggregatePlan::AggTerm> &aggregates,
@@ -214,7 +208,7 @@ void Aggregation::CreateInitialValues(
 void Aggregation::DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
                                  const AggregateInfo &agg_info,
                                  const codegen::Value &update) const {
-  PELOTON_ASSERT(IsValidStorage(agg_info.storage_index));
+  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
 
   // Load the current value of the aggregate
   auto curr = storage_.GetValueSkipNull(codegen, space, agg_info.storage_index);
@@ -281,7 +275,7 @@ void Aggregation::DoNullCheck(
    * nothing to do.
    */
 
-  PELOTON_ASSERT(IsValidStorage(agg_info.storage_index));
+  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
 
   // Fetch null byte so we can phi-resolve it after all the branches
   llvm::Value *null_byte_snapshot =
@@ -329,8 +323,6 @@ void Aggregation::AdvanceValues(
 
     // The update value
     const codegen::Value &update = next_vals[agg_info.source_index];
-
-    PELOTON_ASSERT(IsValidStorage(agg_info.storage_index > 0));
 
     // Check nullability
     if (!null_bitmap.IsNullable(agg_info.storage_index)) {
@@ -425,7 +417,7 @@ void Aggregation::DoMergePartial(CodeGen &codegen,
                                  const Aggregation::AggregateInfo &agg_info,
                                  llvm::Value *curr_vals,
                                  llvm::Value *new_vals) const {
-  PELOTON_ASSERT(IsValidStorage(agg_info.storage_index));
+  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
 
   codegen::Value curr =
       storage_.GetValueSkipNull(codegen, curr_vals, agg_info.storage_index);
