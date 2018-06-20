@@ -162,7 +162,6 @@ class HashTable {
      * @param index The index in the directory
      * @param[out] keys Where each column of the key is stored
      */
-    // Extract the keys for the bucket at the given index
     virtual void ExtractBucketKeys(CodeGen &codegen, llvm::Value *index,
                                    std::vector<codegen::Value> &keys) const = 0;
 

@@ -233,16 +233,23 @@ void PlanGenerator::Visit(const PhysicalDistinct *) {
   // distinct on all output columns
   PELOTON_ASSERT(children_expr_map_.size() == 1);
   PELOTON_ASSERT(children_plans_.size() == 1);
-  auto &child_expr_map = children_expr_map_[0];
+
   std::vector<std::unique_ptr<const expression::AbstractExpression>> hash_keys;
+
+  auto &child_expr_map = children_expr_map_[0];
+
   for (auto &col : output_cols_) {
     PELOTON_ASSERT(child_expr_map.count(col) > 0);
     auto &column_offset = child_expr_map[col];
     hash_keys.emplace_back(new expression::TupleValueExpression(
         col->GetValueType(), 0, column_offset));
   }
-  unique_ptr<planner::HashPlan> hash_plan(new planner::HashPlan(hash_keys));
+
+  unique_ptr<planner::HashPlan> hash_plan(
+      new planner::HashPlan(std::move(hash_keys)));
+
   hash_plan->AddChild(move(children_plans_[0]));
+
   output_plan_ = move(hash_plan);
 }
 
@@ -321,7 +328,8 @@ void PlanGenerator::Visit(const PhysicalInnerHashJoin *op) {
     hash_keys.emplace_back(hash_key);
   }
 
-  unique_ptr<planner::HashPlan> hash_plan(new planner::HashPlan(hash_keys));
+  unique_ptr<planner::HashPlan> hash_plan(
+      new planner::HashPlan(std::move(hash_keys)));
   hash_plan->AddChild(move(children_plans_[1]));
 
   auto join_plan = unique_ptr<planner::AbstractPlan>(new planner::HashJoinPlan(

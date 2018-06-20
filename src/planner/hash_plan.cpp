@@ -6,7 +6,7 @@
 //
 // Identification: src/planner/hash_plan.cpp
 //
-// Copyright (c) 2015-17, Carnegie Mellon University Database Group
+// Copyright (c) 2015-2018, Carnegie Mellon University Database Group
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,8 +27,20 @@ void HashPlan::PerformBinding(BindingContext &binding_context) {
   }
 }
 
-void HashPlan::GetOutputColumns (std::vector<oid_t> &columns) const {
+void HashPlan::GetOutputColumns(std::vector<oid_t> &columns) const {
   GetChild(0)->GetOutputColumns(columns);
+}
+
+std::unique_ptr<AbstractPlan> HashPlan::Copy() const {
+  // Copy keys
+  std::vector<HashKeyPtrType> copied_hash_keys;
+  for (const auto &key : hash_keys_) {
+    copied_hash_keys.emplace_back(key->Copy());
+  }
+
+  // Return
+  return std::unique_ptr<AbstractPlan>(
+      new HashPlan(std::move(copied_hash_keys)));
 }
 
 hash_t HashPlan::Hash() const {
@@ -42,19 +54,16 @@ hash_t HashPlan::Hash() const {
 }
 
 bool HashPlan::operator==(const AbstractPlan &rhs) const {
-  if (GetPlanNodeType() != rhs.GetPlanNodeType())
-    return false;
- 
+  if (GetPlanNodeType() != rhs.GetPlanNodeType()) return false;
+
   auto &other = static_cast<const planner::HashPlan &>(rhs);
   auto hash_key_size = GetHashKeys().size();
-  if (hash_key_size != other.GetHashKeys().size())
-    return false;
+  if (hash_key_size != other.GetHashKeys().size()) return false;
 
   for (size_t i = 0; i < hash_key_size; i++) {
-    if (*GetHashKeys()[i].get() != *other.GetHashKeys()[i].get())
-      return false;
+    if (*GetHashKeys()[i].get() != *other.GetHashKeys()[i].get()) return false;
   }
- 
+
   return AbstractPlan::operator==(rhs);
 }
 

@@ -88,7 +88,7 @@ TEST_F(HashJoinTranslatorTest, SingleHashJoinColumnTest) {
       new planner::HashJoinPlan(JoinType::INNER, nullptr, std::move(projection),
                                 schema, left_hash_keys, right_hash_keys, true)};
   std::unique_ptr<planner::HashPlan> hash_plan{
-      new planner::HashPlan(hash_keys)};
+      new planner::HashPlan(std::move(hash_keys))};
 
   std::unique_ptr<planner::AbstractPlan> left_scan{
       new planner::SeqScanPlan(&GetLeftTable(), nullptr, {0, 1, 2})};

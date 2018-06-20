@@ -718,7 +718,7 @@ void ExecuteJoinTest(PlanNodeType join_algorithm, JoinType join_type,
                                                    1)});
 
       // Create hash plan node
-      planner::HashPlan hash_plan_node(hash_keys);
+      planner::HashPlan hash_plan_node(std::move(hash_keys));
 
       // Construct the hash executor
       executor::HashExecutor hash_executor(&hash_plan_node, nullptr);

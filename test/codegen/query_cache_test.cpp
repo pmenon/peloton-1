@@ -140,7 +140,7 @@ class QueryCacheTest : public PelotonCodeGenTest {
         JoinType::INNER, nullptr, std::move(projection), schema, left_hash_keys,
         right_hash_keys)};
     std::unique_ptr<planner::HashPlan> hash_plan{
-        new planner::HashPlan(hash_keys)};
+        new planner::HashPlan(std::move(hash_keys))};
 
     PlanPtr left_scan{new planner::SeqScanPlan(&GetTestTable(TestTableId()),
                                                nullptr, {0, 1, 2})};
