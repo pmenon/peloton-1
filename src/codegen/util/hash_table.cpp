@@ -16,6 +16,7 @@
 
 #include "common/platform.h"
 #include "common/synchronization/count_down_latch.h"
+#include "common/timer.h"
 #include "threadpool/mono_queue_pool.h"
 #include "type/abstract_pool.h"
 
@@ -284,6 +285,9 @@ void HashTable::ExecutePartitionedScan(
     }
   }
 
+  Timer<std::milli> timer;
+  timer.Start();
+
   // Distribute work
   {
     // Worker pool
@@ -319,6 +323,10 @@ void HashTable::ExecutePartitionedScan(
     // Wait
     latch.Await(0);
   }
+
+  timer.Stop();
+  LOG_INFO("Built and scanned %zu partitions of hash table in %.2lf ms",
+           part_ids.size(), timer.GetDuration());
 }
 
 char *HashTable::InsertLazy(uint64_t hash) {

@@ -124,9 +124,9 @@ OrderByTranslator::OrderByTranslator(const planner::OrderByPlan &plan,
                                      CompilationContext &context,
                                      Pipeline &pipeline)
     : OperatorTranslator(plan, context, pipeline),
-      child_pipeline_(this, Pipeline::Parallelism::Serial) {
+      child_pipeline_(this, Pipeline::Parallelism::Flexible) {
   // Aggregations happen serially (for now ...)
-  pipeline.SetSerial();
+  pipeline.MarkSource(this, Pipeline::Parallelism::Serial);
 
   // Prepare the child
   context.Prepare(*plan.GetChild(0), child_pipeline_);

@@ -271,13 +271,16 @@ HashGroupByTranslator::HashGroupByTranslator(
   context.Prepare(*group_by.GetChild(0), child_pipeline_);
 
   /*
-   * Currently, hash-based aggregations are parallelized if and only if the
-   * child pipeline is also parallel.
+   * Currently, hash-based aggregations are parallelized only if the child
+   * pipeline is also parallelized.
    */
 
   pipeline.MarkSource(this, child_pipeline_.IsParallel()
                                 ? Pipeline::Parallelism::Parallel
                                 : Pipeline::Parallelism::Serial);
+  if (pipeline.IsSerial()) {
+    child_pipeline_.SetSerial();
+  }
 
   /*
    * If we should be pre-fetching into the hash-table, install a boundary in the
