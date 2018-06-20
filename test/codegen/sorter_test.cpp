@@ -172,9 +172,9 @@ class ParallelSortHelper {
 
 TEST_F(SorterTest, SimpleSortTest) { TestSort(100); }
 
-TEST_F(SorterTest, BenchmarkSortTest) { TestSort(5000000); }
+TEST_F(SorterTest, BenchmarkSortTest) { TestSort(500000); }
 
-TEST_F(SorterTest, DISABLED_ParallelSortEmptyTest) {
+TEST_F(SorterTest, ParallelSortEmptyTest) {
   constexpr uint32_t num_threads = 4;
 
   ParallelSortHelper helper(num_threads, CompareColBAsc, sizeof(TestTuple));
@@ -196,7 +196,7 @@ TEST_F(SorterTest, DISABLED_ParallelSortEmptyTest) {
   EXPECT_EQ(0, helper.GetMainSorter().NumTuples());
 }
 
-TEST_F(SorterTest, DISABLED_ParallelSortSmallTest) {
+TEST_F(SorterTest, ParallelSortSmallTest) {
   constexpr uint32_t num_threads = 4;
 
   //////////////////////////////////////////////////////////
@@ -318,35 +318,68 @@ TEST_F(SorterTest, ParallelSortNonOverlappingTest) {
   }
 }
 
-TEST_F(SorterTest, ParallelSortUnbalancedTest) {
+TEST_F(SorterTest, ParallelSortVaryingSizeSortersTest) {
   constexpr uint32_t num_threads = 4;
 
   //////////////////////////////////////////////////////////
-  /// A simple test where sorters have different, unbalanced sizes
+  /// A simple test where sorters have different, but
+  /// relatively similar sizes
   //////////////////////////////////////////////////////////
-  ParallelSortHelper helper(num_threads, CompareColBAsc, sizeof(TestTuple));
+  {
+    ParallelSortHelper helper(num_threads, CompareColBAsc, sizeof(TestTuple));
 
-  uint32_t num_inserts = 0;
-  auto tl_sorters = helper.GetTLSorters();
-  for (uint32_t i = 0; i < tl_sorters.size(); i++) {
-    auto *sorter = tl_sorters[i];
+    uint32_t num_inserts = 0;
+    auto tl_sorters = helper.GetTLSorters();
+    for (uint32_t i = 0; i < tl_sorters.size(); i++) {
+      auto *sorter = tl_sorters[i];
 
-    uint32_t to_insert = static_cast<uint32_t>(rand() % 8000) + 200;
-    LoadSorter(*sorter, to_insert);
+      uint32_t to_insert = static_cast<uint32_t>(rand() % 8000) + 200;
+      LoadSorter(*sorter, to_insert);
 
-    LOG_DEBUG("TL sorter [%u] has %lu tuples", i, sorter->NumTuples());
+      LOG_DEBUG("TL sorter [%u] has %lu tuples", i, sorter->NumTuples());
 
-    num_inserts += to_insert;
+      num_inserts += to_insert;
+    }
+
+    /// Sort
+    helper.SortParallel();
+
+    /// Should be sorted
+    CheckSorted(helper.GetMainSorter(), true);
+
+    /// Check result size
+    EXPECT_EQ(num_inserts, helper.GetMainSorter().NumTuples());
   }
 
-  /// Sort
-  helper.SortParallel();
+  //////////////////////////////////////////////////////////
+  /// A test where sorts grow exponentially in size from 10
+  /// to 10,000 in increments of 10
+  //////////////////////////////////////////////////////////
+  {
+    ParallelSortHelper helper(num_threads, CompareColBAsc, sizeof(TestTuple));
 
-  /// Should be sorted
-  CheckSorted(helper.GetMainSorter(), true);
+    uint32_t num_inserts = 0;
+    auto tl_sorters = helper.GetTLSorters();
+    for (uint32_t i = 0; i < tl_sorters.size(); i++) {
+      auto *sorter = tl_sorters[i];
 
-  /// Check result size
-  EXPECT_EQ(num_inserts, helper.GetMainSorter().NumTuples());
+      auto to_insert = static_cast<uint32_t>(std::pow(10, i+1));
+      LoadSorter(*sorter, to_insert);
+
+      LOG_DEBUG("TL sorter [%u] has %lu tuples", i, sorter->NumTuples());
+
+      num_inserts += to_insert;
+    }
+
+    /// Sort
+    helper.SortParallel();
+
+    /// Should be sorted
+    CheckSorted(helper.GetMainSorter(), true);
+
+    /// Check result size
+    EXPECT_EQ(num_inserts, helper.GetMainSorter().NumTuples());
+  }
 }
 
 }  // namespace test

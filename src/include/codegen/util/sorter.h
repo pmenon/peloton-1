@@ -40,6 +40,8 @@ class Sorter {
   static constexpr uint64_t kInitialBufferSize = 4 * 1024;
 
  public:
+  static constexpr uint64_t kMinTuplesForParallelSort = 10000;
+
   using ComparisonFunction = int (*)(const char *left_tuple,
                                      const char *right_tuple);
 

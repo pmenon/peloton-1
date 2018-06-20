@@ -116,88 +116,150 @@ struct MergeWork {
 
 }  // namespace
 
-// This function works as follows. We begin by issuing a sort on each
-// thread-local sorter instance stored in ThreadStates, in parallel. While doing
-// so, we also compute the total number of tuples across all N sorter instances
-// to perfectly size our output vector. We partition each thread-local sorter
-// into B buckets, hence also partitioning our output into B buckets. Each
-// thread-local sorter finds B-1 splitter keys that evenly split its contents
-// into B buckets. To avoid skew, we take the median of each of the B-1 set of
-// N splitter keys. For each splitter key, we find all input ranges and output
-// positions and construct a merge package. Merge packages are independent
-// pieces of work that are issued in parallel across a set of worker threads.
 void Sorter::SortParallel(
     const executor::ExecutorContext::ThreadStates &thread_states,
     uint32_t sorter_offset) {
-  // Collect all sorter instances
+  // The main comparison function to compare two tuples
+  const auto comp = [this](char *l, char *r) { return cmp_func_(l, r) < 0; };
+
+  // Collect all non-empty sorter instances
   uint64_t num_tuples = 0;
   std::vector<Sorter *> sorters;
   thread_states.ForEach<Sorter>(sorter_offset,
                                 [&num_tuples, &sorters](Sorter *sorter) {
-                                  sorters.push_back(sorter);
-                                  num_tuples += sorter->NumTuples();
+                                  if (sorter->NumTuples() > 0) {
+                                    sorters.push_back(sorter);
+                                    num_tuples += sorter->NumTuples();
+                                  }
                                 });
+
+  // If all sorters are empty, there isn't anything to sort and we're done
+  if (sorters.empty()) {
+    PELOTON_ASSERT(num_tuples == 0);
+    return;
+  }
+
+  /*
+   * If the total number of tuples across **ALL** sorter instances is less than
+   * the kMinTuplesForParallelSort threshold value, then we use a simpler 
+   * single-threaded sort. This will likely be faster due to less overhead in
+   * spawning sort and merge jobs. This value was found empirically, but might
+   * be a good candidate for learning based on tuples sizes, CPU speeds, caches,
+   * algorithms, etc.
+   */
+#ifndef NDEBUG
+  if (num_tuples < kMinTuplesForParallelSort) {
+    // Resize to accommodate all tuples
+    tuples_.reserve(num_tuples);
+
+    // Move all thread-local sorter data to the main sorter instance
+    for (auto *sorter : sorters) {
+      tuples_.insert(tuples_.end(), sorter->tuples_.begin(),
+                     sorter->tuples_.end());
+      sorter->TransferMemoryBlocks(*this);
+    }
+
+    // Sort single-threaded
+    Sort();
+
+    // Finish
+    return;
+  }
+#endif
+
+  /*
+   * At this point, we're fairly certain we'll need a full blown parallel sort.
+   * Parallel sorting works as follows. We begin by sorting each thread-local 
+   * sorter (collected earlier and which are non-empty) in parallel using the 
+   * worker pool. We then partition each thread-local sorter into B buckets, 
+   * thus also partitioning the output into B buckets. Each thread-local sorter
+   * finds B-1 splitter keys that "evenly" split its contents into B buckets.
+   * To handle skew in data between sorters, we take the median value of each of
+   * the B-1 candidate set of splitter keys. For each splitter key, we find all
+   * input ranges in all sorter instances, and compute the output position in
+   * the final result. We combine these two elements into what we call a merge
+   * package. Merge packages are independent pieces of work that are issued in
+   * parallel across a set of worker threads. Finally, we need to transfer all
+   * thread-local tuple data into this sorter instance so that the thread-local
+   * instances can be discarded immediately.
+   */
+
+  // There are some tuples to sort, set up some space
+  tuples_.resize(num_tuples);
+  tuples_start_ = tuples_.data();
+  tuples_end_ = tuples_start_ + num_tuples;
 
   // The worker pool we use to execute parallel work
   auto &work_pool = threadpool::MonoQueuePool::GetExecutionInstance();
-
-  // The main comparison function to compare two tuples
-  auto comp = [this](char *l, char *r) { return cmp_func_(l, r) < 0; };
-
-  // Where the merging work units are collected
-  std::vector<MergeWork> merge_work;
-
-  // Let B be the number of buckets we wish to decompose our input into, let N
-  // be the number of sorter instances we have; then, splitters is a [B-1 x N]
-  // matrix. splitters[i][j] indicates the i-th splitter key found in the j-th
-  // sorter instance. Thus, each row of the matrix contains a list of candidate
-  // splitters found in each sorter, and each column indicates the set of
-  // splitter keys in a single sorter.
-  auto num_buckets = static_cast<uint32_t>(sorters.size());
-  std::vector<std::vector<char *>> splitters(num_buckets - 1);
-  for (auto &splitter : splitters) {
-    splitter.resize(sorters.size());
-  }
 
   Timer<std::milli> timer;
   timer.Start();
 
   ////////////////////////////////////////////////////////////////////
-  /// Step 1 - Sort each local run in parallel
+  /// Step 1 - Sort each thread local run in parallel
   ////////////////////////////////////////////////////////////////////
   {
-    common::synchronization::CountDownLatch latch{sorters.size()};
-    for (uint32_t sort_idx = 0; sort_idx < sorters.size(); sort_idx++) {
-      work_pool.SubmitTask([&sorters, &splitters, &latch, sort_idx]() {
-        // First sort
-        auto *sorter = sorters[sort_idx];
+    common::synchronization::CountDownLatch latch(sorters.size());
+
+    for (auto *sorter : sorters) {
+      work_pool.SubmitTask([sorter, &latch]() {
+        // Sort
         sorter->Sort();
-
-        // Now compute local separators that "evenly" divide the input
-        auto part_size = sorter->NumTuples() / (splitters.size() + 1);
-        for (uint32_t i = 0; i < splitters.size(); i++) {
-          splitters[i][sort_idx] = sorter->tuples_[(i + 1) * part_size];
-        }
-
         // Count down latch
         latch.CountDown();
       });
     }
 
-    // Allocate room for new tuples
-    tuples_.resize(num_tuples);
-
-    // Wait sort jobs to be done
+    // Wait for sort jobs to complete
     latch.Await(0);
   }
 
   timer.Stop();
-  LOG_DEBUG("Total sort time: %.2lf ms", timer.GetDuration());
+  LOG_DEBUG("Total thread-local sort time: %.2lf ms", timer.GetDuration());
   timer.Reset();
   timer.Start();
 
   ////////////////////////////////////////////////////////////////////
-  /// Step 2 - Compute disjoint merge ranges from splitters
+  /// Step 2 - Compute splitter keys
+  ////////////////////////////////////////////////////////////////////
+
+  /*
+   * Let B be the number of buckets we wish to decompose our input into, let N
+   * be the number of sorter instances we have; then, splitters is a [B-1 x N]
+   * matrix. splitters[i][j] indicates the i-th splitter key found in the j-th
+   * sorter instance. Thus, each row of the matrix contains a list of candidate
+   * keys (from each sorter) that split partition i and i+1, and each column
+   * contains all splitter keys for a single sorter.
+   */
+  auto num_buckets = work_pool.NumWorkers();
+  std::vector<std::vector<char *>> splitters(num_buckets - 1);
+
+  {
+    for (auto *sorter : sorters) {
+      if (sorter->NumTuples() < num_buckets - 1) {
+        for (uint32_t i = 0; i < sorter->NumTuples(); i++) {
+          splitters[i].push_back(sorter->tuples_[i]);
+        }
+      } else {
+        auto part_size = sorter->NumTuples() / num_buckets;
+        PELOTON_ASSERT(part_size > 0);
+        for (uint32_t i = 0; i < num_buckets - 1; i++) {
+          splitters[i].push_back(sorter->tuples_[(i + 1) * part_size]);
+        }
+      }
+    }
+  }
+
+  timer.Stop();
+  LOG_DEBUG("Splitter construction time: %.2lf ms", timer.GetDuration());
+  timer.Reset();
+  timer.Start();
+
+  // Where the merging work units are collected
+  std::vector<MergeWork> merge_work;
+
+  ////////////////////////////////////////////////////////////////////
+  /// Step 3 - Compute disjoint merge ranges from splitters
   ////////////////////////////////////////////////////////////////////
   {
     // This tracks the current position in the global output where the next
@@ -215,6 +277,8 @@ void Sorter::SortParallel(
     std::vector<char **> next_start(sorters.size());
 
     for (uint32_t idx = 0; idx < splitters.size(); idx++) {
+      if (splitters[idx].empty()) continue;
+
       // Sort the local separators and choose the median
       std::sort(splitters[idx].begin(), splitters[idx].end(), comp);
 
@@ -259,7 +323,7 @@ void Sorter::SortParallel(
   timer.Start();
 
   //////////////////////////////////////////////////////////////////
-  /// Step 3 - Distribute work packages to workers in parallel
+  /// Step 4 - Distribute work packages to workers in parallel
   //////////////////////////////////////////////////////////////////
   {
     common::synchronization::CountDownLatch latch{merge_work.size()};
@@ -292,16 +356,13 @@ void Sorter::SortParallel(
   }
 
   //////////////////////////////////////////////////////////////////
-  /// Step 4 - Transfer ownership of thread-local memory
+  /// Step 5 - Transfer ownership of thread-local memory
   //////////////////////////////////////////////////////////////////
   {
     for (auto *sorter : sorters) {
       sorter->TransferMemoryBlocks(*this);
     }
   }
-
-  tuples_start_ = tuples_.data();
-  tuples_end_ = tuples_start_ + tuples_.size();
 
   timer.Stop();
   LOG_DEBUG("Merging sorted runs time: %.2lf ms", timer.GetDuration());
