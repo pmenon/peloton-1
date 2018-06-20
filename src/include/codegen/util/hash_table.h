@@ -229,11 +229,15 @@ class HashTable {
                    uint32_t hash_table_offset);
 
   /**
-   * This function is called to "merge" the contents of the provided hash table
-   * into this table. Each hash table is assumed to have been built lazily
-   * constructed and unfinished; that is, each able has not constructed a
-   * directory hash table, but has buffered a series of tuples into hash table
-   * memory.
+   * This function merges the contents of the provided hash table into this
+   * hash table. The provided hash table is assumed to have been built lazily,
+   * and has not finished construction of the directory; that is, each table has
+   * only buffered tuple data into its storage area, but not into the hash table
+   * directory.
+   *
+   * This function assumes a prior call to @refitem ReserveLazy() to allocate
+   * sufficient space for all hash tables that will be merged. Hence, this
+   * function does not allocate any memory.
    *
    * NOTE: This function is called from different threads!
    *
@@ -476,8 +480,8 @@ class HashTable {
   Entry *NewEntry(uint64_t hash);
 
   /**
-   * Transfer all allocated memory blocks that this hash table has allocated to
-   * the target table. This needs to be performed in a thread-safe manner since
+   * Transfer all allocated memory blocks in this hash table to the provided
+   * target table. This needs to be performed in a thread-safe manner since
    * the target can be under concurrent modification.
    *
    * @param target The hash table that takes ownership of our allocated memory
@@ -492,10 +496,13 @@ class HashTable {
   void FlushToOverflowPartitions();
 
   /**
-   * Build a branch new hash table from the tuples stored in the partition with
-   * the provided partition ID. This hash table owns the created table.
+   * Build a new hash table from the tuples stored in the partition with the
+   * provided ID. This newly constructed hash table is owned by this one.
    *
    * @param partition_id The ID of the partition we'll create the hash table on
+   *
+   * @return The constructed partition. This should be the same as in
+   * part_tables_[partition_id]
    */
   const HashTable *BuildPartitionedTable(void *query_state,
                                          uint32_t partition_id);
@@ -522,7 +529,7 @@ class HashTable {
   // The current active block
   MemoryBlock *block_;
 
-  // A pointer into the block where the next position is
+  // A pointer into the active memory block where the next free entry is
   char *next_entry_;
 
   // The number of available bytes left in the block

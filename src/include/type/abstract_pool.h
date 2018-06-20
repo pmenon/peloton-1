@@ -17,15 +17,20 @@
 namespace peloton {
 namespace type {
 
-// Interface of a memory pool that can quickly allocate chunks of memory
+/**
+ * This class it the main interface for a memory pool that can quickly allocate
+ * chunks of memory.
+ */
 class AbstractPool {
  public:
-  // Virtual destructor
+  /// Virtual destructor
   virtual ~AbstractPool() = default;
 
   /**
    * @brief Allocate a contiguous block of memory of the given size
+   *
    * @param size The size (in bytes) of memory to allocate
+   *
    * @return A non-null pointer if allocation is successful. A null pointer if
    * allocation fails.
    *
