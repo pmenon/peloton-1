@@ -15,10 +15,8 @@
 #include "codegen/compilation_context.h"
 #include "codegen/lang/if.h"
 #include "codegen/lang/loop.h"
-#include "codegen/oa_hash_table.h"
 #include "codegen/operator/projection_translator.h"
 #include "codegen/proxy/hash_table_proxy.h"
-#include "codegen/proxy/oa_hash_table_proxy.h"
 #include "codegen/type/bigint_type.h"
 #include "codegen/type/integer_type.h"
 
@@ -257,6 +255,60 @@ class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
 
 ////////////////////////////////////////////////////////////////////////////////
 ///
+/// Merge Distinct
+///
+////////////////////////////////////////////////////////////////////////////////
+
+class HashGroupByTranslator::IterateDistinctTable_MergeAggregates
+    : public HashTable::IterateCallback {
+ public:
+  IterateDistinctTable_MergeAggregates(const HashTable &agg_table,
+                                       llvm::Value *ht_ptr,
+                                       const Aggregation &aggregation,
+                                       uint32_t agg_pos)
+      : agg_table_(agg_table),
+        ht_ptr_(ht_ptr),
+        aggregation_(aggregation),
+        agg_pos_(agg_pos) {}
+
+  void ProcessEntry(CodeGen &codegen, const std::vector<codegen::Value> &keys,
+                    UNUSED_ATTRIBUTE llvm::Value *values) const override {
+    class MergeDistinctValue : public HashTable::ProbeCallback {
+     public:
+      MergeDistinctValue(const Aggregation &_aggregation, uint32_t _agg_pos,
+                         const Value &_distinct_val)
+          : aggregation(_aggregation),
+            agg_pos(_agg_pos),
+            distinct_val(_distinct_val) {}
+
+      void ProcessEntry(CodeGen &codegen, llvm::Value *value) const override {
+        aggregation.MergeDistinct(codegen, value, agg_pos, distinct_val);
+      }
+
+     private:
+      const Aggregation &aggregation;
+      uint32_t agg_pos;
+      const codegen::Value &distinct_val;
+    };
+
+    std::vector<codegen::Value> group_key(keys.begin(), keys.end() - 1);
+    codegen::Value distinct_val = keys.back();
+
+    MergeDistinctValue merge_distinct(aggregation_, agg_pos_, distinct_val);
+    agg_table_.ProbeOrInsert(codegen, ht_ptr_, nullptr /* hash value */,
+                             group_key, HashTable::InsertMode::Normal,
+                             &merge_distinct, nullptr);
+  }
+
+ private:
+  const HashTable &agg_table_;
+  llvm::Value *ht_ptr_;
+  const Aggregation &aggregation_;
+  uint32_t agg_pos_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+///
 /// Hash Group By Translator Logic
 ///
 ////////////////////////////////////////////////////////////////////////////////
@@ -296,7 +348,7 @@ HashGroupByTranslator::HashGroupByTranslator(
   CodeGen &codegen = GetCodeGen();
   QueryState &query_state = context.GetQueryState();
   hash_table_id_ =
-      query_state.RegisterState("groupBy", HashTableProxy::GetType(codegen));
+      query_state.RegisterState("groupByHT", HashTableProxy::GetType(codegen));
 
   // Prepare the predicate if one exists
   if (group_by.GetPredicate() != nullptr) {
@@ -309,11 +361,32 @@ HashGroupByTranslator::HashGroupByTranslator(
     key_type.push_back(grouping_ai->type);
   }
 
-  // Prepare all the aggregation expressions and setup the storage format of
-  // values/aggregates in the hash table
-  for (const auto &agg_term : group_by.GetUniqueAggTerms()) {
+  /*
+   * Prepare translators for all the aggregates. We also find all distinct
+   * aggregates and arrange a hash table instance for them too.
+   */
+
+  const auto &aggregates = group_by.GetUniqueAggTerms();
+
+  for (uint32_t agg_idx = 0; agg_idx < aggregates.size(); agg_idx++) {
+    const auto &agg_term = aggregates[agg_idx];
+
     if (agg_term.expression != nullptr) {
       context.Prepare(*agg_term.expression);
+    }
+
+    if (agg_term.distinct) {
+      // Allocate a hash table
+      QueryState::Id ht_id = query_state.RegisterState(
+          "distinctHT", HashTableProxy::GetType(codegen));
+
+      // The key type
+      std::vector<type::Type> distinct_key = key_type;
+      distinct_key.emplace_back(agg_term.expression->ResultType());
+
+      // Track metadata for distinct aggregate
+      distinct_agg_infos_.emplace_back(agg_idx, ht_id, 0 /* TL table id */,
+                                       HashTable(codegen, distinct_key, 0));
     }
   }
 
@@ -324,7 +397,7 @@ HashGroupByTranslator::HashGroupByTranslator(
   }
 
   // Setup the aggregation logic for this group by
-  aggregation_.Setup(codegen, group_by.GetUniqueAggTerms(), false);
+  aggregation_.Setup(codegen, aggregates, false /* is global */);
 
   // Create the hash table
   auto payload_size = aggregation_.GetAggregatesStorageSize();
@@ -332,9 +405,18 @@ HashGroupByTranslator::HashGroupByTranslator(
 }
 
 void HashGroupByTranslator::InitializeQueryState() {
+  CodeGen &codegen = GetCodeGen();
+
+  llvm::Value *exec_ctx_ptr = GetExecutorContextPtr();
+
   // Initialize the primary aggregation hash table
-  hash_table_.Init(GetCodeGen(), GetExecutorContextPtr(),
-                   LoadStatePtr(hash_table_id_));
+  hash_table_.Init(codegen, exec_ctx_ptr, LoadStatePtr(hash_table_id_));
+
+  // Initialize tables for distinct aggregates
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    hash_table_.Init(codegen, exec_ctx_ptr,
+                     LoadStatePtr(distinct_agg_info.hash_table_id));
+  }
 }
 
 void HashGroupByTranslator::DefineAuxiliaryFunctions() {
@@ -551,41 +633,39 @@ void HashGroupByTranslator::Consume(ConsumerContext &context,
 void HashGroupByTranslator::Consume(ConsumerContext &ctx,
                                     RowBatch::Row &row) const {
   /*
-   * In this function, we take in an input row and update the group in our
-   * aggregation hash table.
-   *
-   * First, we collect the grouping keys used to probe the hash table.
+   * First, collect the grouping key used to probe the main aggregate hash table
    */
 
-  std::vector<codegen::Value> key;
-  CollectHashKeys(row, key);
+  std::vector<codegen::Value> group_key;
+  CollectGroupingKey(row, group_key);
 
   /*
-   * Now, we collect values (derived from attributes or expressions) to update
-   * the aggregates in the hash table. Some aggregate terms have no input
-   * expressions; these are COUNT(*)'s. We synthesize a constant, non-NULL
-   * BIGINT 1 value for those counts.
+   * Next, derived and collect values to update the aggregates in the main
+   * aggregate hash table.
    */
 
   std::vector<codegen::Value> vals;
 
-  auto &codegen = GetCodeGen();
-  const auto &plan = GetPlanAs<planner::AggregatePlan>();
-  for (const auto &agg_term : plan.GetUniqueAggTerms()) {
+  CodeGen &codegen = GetCodeGen();
+
+  const auto &agg_terms =
+      GetPlanAs<planner::AggregatePlan>().GetUniqueAggTerms();
+  for (const auto &agg_term : agg_terms) {
     if (agg_term.expression != nullptr) {
       vals.emplace_back(row.DeriveValue(codegen, *agg_term.expression));
     } else {
+      /*
+       * If an aggregate does not have an associated expression, it is most
+       * likely a COUNT(*). We synthesize a constant, non-NULL BIGINT 1 value
+       * for those counts.
+       *
+       */
       PELOTON_ASSERT(agg_term.agg_type == ExpressionType::AGGREGATE_COUNT_STAR);
-      type::Type count_star_type(type::Type(type::BigInt::Instance(), false));
-      vals.emplace_back(count_star_type, codegen.Const64(1));
+      PELOTON_ASSERT(agg_term.agg_ai.type.type_id ==
+                     ::peloton::type::TypeId::BIGINT);
+      PELOTON_ASSERT(!agg_term.agg_ai.type.nullable);
+      vals.emplace_back(agg_term.agg_ai.type, codegen.Const64(1));
     }
-  }
-
-  // If the hash value is available, use it
-  llvm::Value *hash = nullptr;
-  if (row.HasAttribute(&OAHashTable::kHashAI)) {
-    codegen::Value hash_val = row.DeriveValue(codegen, &OAHashTable::kHashAI);
-    hash = hash_val.GetValue();
   }
 
   /*
@@ -600,30 +680,57 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
    * pipelines.
    */
 
-  HashTable::InsertMode mode;
-  llvm::Value *table_ptr = nullptr;
+  const bool parallel = ctx.GetPipeline().IsParallel();
 
-  if (ctx.GetPipeline().IsSerial()) {
-    mode = HashTable::InsertMode::Normal;
-    table_ptr = LoadStatePtr(hash_table_id_);
-  } else {
-    mode = HashTable::InsertMode::Partitioned;
-    table_ptr =
-        ctx.GetPipelineContext()->LoadStatePtr(codegen, tl_hash_table_id_);
-  }
+  HashTable::InsertMode mode = parallel ? HashTable::InsertMode::Partitioned
+                                        : HashTable::InsertMode::Normal;
+
+  PipelineContext *pipeline_ctx = ctx.GetPipelineContext();
+  llvm::Value *table_ptr =
+      parallel ? pipeline_ctx->LoadStatePtr(codegen, tl_hash_table_id_)
+               : LoadStatePtr(hash_table_id_);
 
   /*
-   * Finally, update the aggregation hash table!
+   * Update the main aggregation hash table!
    */
 
   ConsumerProbe probe(aggregation_, vals);
   ConsumerInsert insert(aggregation_, vals);
-  hash_table_.ProbeOrInsert(codegen, table_ptr, hash, key, mode, probe, insert);
+  hash_table_.ProbeOrInsert(codegen, table_ptr, nullptr /* hash value */,
+                            group_key, mode, &probe, &insert);
+
+  /*
+   * Now, update all hash tables for distinct aggregates, if any
+   */
+
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    // The key used to insert into the distinct table
+    codegen::Value distinct_val = row.DeriveValue(
+        codegen, *agg_terms[distinct_agg_info.agg_pos].expression);
+
+    std::vector<codegen::Value> distinct_key = group_key;
+    distinct_key.push_back(distinct_val);
+
+    // The pointer to the distinct table
+    llvm::Value *ht_ptr =
+        LoadStatePtr(parallel ? distinct_agg_info.tl_hash_table_id
+                              : distinct_agg_info.hash_table_id);
+
+    // Insert
+    hash_table_.ProbeOrInsert(codegen, ht_ptr, nullptr /* hash value */,
+                              distinct_key, mode, nullptr, nullptr);
+  }
 }
 
-// Cleanup by destroying the aggregation hash-table
 void HashGroupByTranslator::TearDownQueryState() {
+  // Destroy main aggregation table
   hash_table_.Destroy(GetCodeGen(), LoadStatePtr(hash_table_id_));
+
+  // Destroy tables for distinct aggregates
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    hash_table_.Destroy(GetCodeGen(),
+                        LoadStatePtr(distinct_agg_info.hash_table_id));
+  }
 }
 
 // Estimate the size of the dynamically constructed hash-table
@@ -638,7 +745,7 @@ bool HashGroupByTranslator::UsePrefetching() const {
   return kUsePrefetch;
 }
 
-void HashGroupByTranslator::CollectHashKeys(
+void HashGroupByTranslator::CollectGroupingKey(
     RowBatch::Row &row, std::vector<codegen::Value> &key) const {
   CodeGen &codegen = GetCodeGen();
   const auto &plan = GetPlanAs<planner::AggregatePlan>();
@@ -670,35 +777,81 @@ void HashGroupByTranslator::InitializePipelineState(
     return;
   }
 
+  CodeGen &codegen = GetCodeGen();
+
+  llvm::Value *exec_ctx_ptr = GetExecutorContextPtr();
+
   /*
    * In parallel aggregation, each thread will have a thread-local hash table
    * instance defined in the thread state. We initialize it here.
    */
 
-  auto &codegen = GetCodeGen();
+  llvm::Value *tl_ht_ptr =
+      pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
+  hash_table_.Init(codegen, exec_ctx_ptr, tl_ht_ptr);
 
-  auto *tl_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
-  hash_table_.Init(codegen, GetExecutorContextPtr(), tl_ht_ptr);
+  /*
+   * If there are distinct aggregates, each thread will also have a thread-local
+   * hash table **FOR EACH** distinct aggregate. Initialize them all here, too.
+   */
+
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    const HashTable &hash_table = distinct_agg_info.hash_table;
+
+    llvm::Value *tl_distinct_ht_ptr =
+        pipeline_ctx.LoadStatePtr(codegen, distinct_agg_info.tl_hash_table_id);
+
+    hash_table.Init(codegen, exec_ctx_ptr, tl_distinct_ht_ptr);
+  }
 }
 
 void HashGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
-  if (!pipeline_ctx.IsParallel() ||
-      pipeline_ctx.GetPipeline() != child_pipeline_) {
+  if (pipeline_ctx.GetPipeline() != child_pipeline_) {
     return;
   }
 
   /*
+   * We've consumed all tuples from the child plan. If we have any distinct
+   * aggregates, we need to merge those in before producing output tuples.
+   */
+
+  if (!pipeline_ctx.IsParallel()) {
+    if (HasDistinctAggregates()) {
+      MergeDistinctAggregates();
+    }
+    return;
+  }
+
+  CodeGen &codegen = GetCodeGen();
+
+  /*
    * In parallel aggregation, after we're built thread-local hash tables, we
    * need to coalesce them into one. To do this, we transfer all thread-local
-   * data to a global hash table (in a partitioned manner). Luckily, we've built
-   * a method that does that for us, which we invoke here.
+   * data to a global hash table (in a partitioned manner).
    */
-  auto &codegen = GetCodeGen();
-  auto *global_ht = LoadStatePtr(hash_table_id_);
-  auto *thread_states = GetThreadStatesPtr();
-  auto ht_offset = pipeline_ctx.GetEntryOffset(codegen, tl_hash_table_id_);
+
+  llvm::Value *global_ht_ptr = LoadStatePtr(hash_table_id_);
+  llvm::Value *thread_states_ptr = GetThreadStatesPtr();
+  uint32_t ht_offset = pipeline_ctx.GetEntryOffset(codegen, tl_hash_table_id_);
+
   codegen.Call(HashTableProxy::TransferPartitions,
-               {global_ht, thread_states, codegen.Const32(ht_offset)});
+               {global_ht_ptr, thread_states_ptr, codegen.Const32(ht_offset)});
+
+  /*
+   * Ditto for all distinct tables
+   */
+
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    llvm::Value *global_distinct_ht_ptr =
+        LoadStatePtr(distinct_agg_info.tl_hash_table_id);
+
+    uint32_t tl_distinct_ht_offset = pipeline_ctx.GetEntryOffset(
+        codegen, distinct_agg_info.tl_hash_table_id);
+
+    codegen.Call(HashTableProxy::TransferPartitions,
+                 {global_distinct_ht_ptr, thread_states_ptr,
+                  codegen.Const32(tl_distinct_ht_offset)});
+  }
 }
 
 void HashGroupByTranslator::TearDownPipelineState(
@@ -708,15 +861,50 @@ void HashGroupByTranslator::TearDownPipelineState(
     return;
   }
 
+  CodeGen &codegen = GetCodeGen();
+
   /*
    * In parallel aggregation, each thread will have a thread-local hash table
    * instance defined in the thread state. We destroy it here.
    */
 
-  auto &codegen = GetCodeGen();
-
-  auto *tl_ht_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
+  llvm::Value *tl_ht_ptr =
+      pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
   hash_table_.Destroy(codegen, tl_ht_ptr);
+
+  /*
+   * If there are distinct aggregates, each thread will also have a thread-local
+   * hash table **FOR EACH** distinct aggregate. Destroy them all here, too.
+   */
+
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    const HashTable &hash_table = distinct_agg_info.hash_table;
+
+    llvm::Value *tl_distinct_ht_ptr =
+        pipeline_ctx.LoadStatePtr(codegen, distinct_agg_info.tl_hash_table_id);
+
+    hash_table.Destroy(codegen, tl_distinct_ht_ptr);
+  }
+}
+
+void HashGroupByTranslator::MergeDistinctAggregates() const {
+  CodeGen &codegen = GetCodeGen();
+
+  llvm::Value *agg_ht_ptr = LoadStatePtr(hash_table_id_);
+
+  for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    // Load the pointer to this distinct aggregate's hash table
+    llvm::Value *distinct_ht_ptr =
+        LoadStatePtr(distinct_agg_info.hash_table_id);
+
+    // Load the hash table access class for this distinct aggregate
+    const HashTable &hash_table = distinct_agg_info.hash_table;
+
+    // Do the merge
+    IterateDistinctTable_MergeAggregates merge_distinct(
+        hash_table_, agg_ht_ptr, aggregation_, distinct_agg_info.agg_pos);
+    hash_table.Iterate(codegen, distinct_ht_ptr, merge_distinct);
+  }
 }
 
 }  // namespace codegen

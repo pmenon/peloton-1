@@ -16,8 +16,14 @@
 #include "codegen/compact_storage.h"
 #include "codegen/value.h"
 #include "codegen/vector.h"
+#include "planner/attribute_info.h"
 
 namespace peloton {
+
+namespace planner {
+class AttributeInfo;
+}  // namespace planner
+
 namespace codegen {
 
 /**
@@ -25,6 +31,9 @@ namespace codegen {
  */
 class HashTable {
  public:
+  // A global pointer for attribute hashes
+  static const planner::AttributeInfo kHashAI;
+
   /**
    * This callback functor is used when probing the hash table for a given
    * key. It is invoked when a matching key-value pair is found in the hash
@@ -73,17 +82,6 @@ class HashTable {
      * @return The number of bytes needed to store the value
      */
     virtual llvm::Value *GetValueSize(CodeGen &codegen) const = 0;
-  };
-
-  // No-op InsertCallback
-  class NoOpInsertCallback : public InsertCallback {
-   public:
-    void StoreValue(UNUSED_ATTRIBUTE CodeGen &codegen,
-                    UNUSED_ATTRIBUTE llvm::Value *space) const override {}
-    llvm::Value *GetValueSize(
-        UNUSED_ATTRIBUTE CodeGen &codegen) const override {
-      return nullptr;
-    }
   };
 
   /**
@@ -176,17 +174,6 @@ class HashTable {
                                      llvm::Value *index) const = 0;
   };
 
-  /**
-   * A class storing the result of a probe into the hash table
-   */
-  struct ProbeResult {
-    // Actual probe result (bool), if the key already exists in the hast table
-    llvm::Value *key_exists;
-
-    // Data pointer (u8*), either to the existing data or to the new empty entry
-    llvm::Value *data_ptr;
-  };
-
   enum class InsertMode { Normal, Lazy, Partitioned };
 
  public:
@@ -195,27 +182,16 @@ class HashTable {
   HashTable(CodeGen &codegen, const std::vector<type::Type> &key_type,
             uint32_t value_size);
 
-  // Destructor
-  virtual ~HashTable() = default;
+  void Init(CodeGen &codegen, llvm::Value *exec_ctx, llvm::Value *ht_ptr) const;
 
-  virtual void Init(CodeGen &codegen, llvm::Value *ht_ptr) const;
-  virtual void Init(CodeGen &codegen, llvm::Value *exec_ctx,
-                    llvm::Value *ht_ptr) const;
+  void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
+                     const std::vector<codegen::Value> &key,
+                     InsertMode insert_mode, ProbeCallback *probe_callback,
+                     InsertCallback *insert_callback) const;
 
-  virtual void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
-                             llvm::Value *hash,
-                             const std::vector<codegen::Value> &key,
-                             InsertMode insert_mode,
-                             ProbeCallback &probe_callback,
-                             InsertCallback &insert_callback) const;
-
-  virtual ProbeResult ProbeOrInsert(
-      CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-      const std::vector<codegen::Value> &key) const;
-
-  virtual void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                      const std::vector<codegen::Value> &keys, InsertMode mode,
-                      InsertCallback &callback) const;
+  void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
+              const std::vector<codegen::Value> &keys, InsertMode mode,
+              InsertCallback &callback) const;
 
   void BuildLazy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
@@ -228,18 +204,18 @@ class HashTable {
   void MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
                       llvm::Value *partitions, MergeCallback &callback) const;
 
-  virtual void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
-                       IterateCallback &callback) const;
+  void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
+               IterateCallback &callback) const;
 
-  virtual void VectorizedIterate(CodeGen &codegen, llvm::Value *ht_ptr,
-                                 Vector &selection_vector,
-                                 VectorizedIterateCallback &callback) const;
+  void VectorizedIterate(CodeGen &codegen, llvm::Value *ht_ptr,
+                         Vector &selection_vector,
+                         VectorizedIterateCallback &callback) const;
 
-  virtual void FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
-                       const std::vector<codegen::Value> &key,
-                       IterateCallback &callback) const;
+  void FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
+               const std::vector<codegen::Value> &key,
+               IterateCallback &callback) const;
 
-  virtual void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
+  void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
  private:
   // The size of the payload value store in the hash table

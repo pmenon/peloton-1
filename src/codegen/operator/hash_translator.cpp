@@ -24,26 +24,6 @@ namespace codegen {
 
 ////////////////////////////////////////////////////////////////////////////////
 ///
-/// Consumer Probe
-///
-////////////////////////////////////////////////////////////////////////////////
-
-/**
- * The callback used when we probe the hash table and the key already exists.
- * It's a dummy class that just drops the row and does nothing.
- */
-class HashTranslator::ConsumerProbe : public HashTable::ProbeCallback {
- public:
-  // The callback
-  void ProcessEntry(UNUSED_ATTRIBUTE CodeGen &codegen,
-                    UNUSED_ATTRIBUTE llvm::Value *data_area) const override {
-    // The key already exists in the hash table, which means that we can just
-    // drop this row, as it already exists in the result.
-  }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-///
 /// Consumer Insert
 ///
 ////////////////////////////////////////////////////////////////////////////////
@@ -132,10 +112,9 @@ void HashTranslator::Consume(ConsumerContext &context,
   llvm::Value *hash = nullptr;
 
   // Insert into the hash table; if it's unique, also send along the pipeline
-  ConsumerProbe probe;
   ConsumerInsert insert(context, row);
   hash_table_.ProbeOrInsert(GetCodeGen(), hash_table_ptr, hash, key,
-                            HashTable::InsertMode::Normal, probe, insert);
+                            HashTable::InsertMode::Normal, nullptr, &insert);
 }
 
 void HashTranslator::TearDownQueryState() {

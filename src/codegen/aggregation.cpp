@@ -13,7 +13,6 @@
 #include "codegen/aggregation.h"
 
 #include "codegen/lang/if.h"
-#include "codegen/proxy/oa_hash_table_proxy.h"
 #include "codegen/type/bigint_type.h"
 #include "codegen/type/boolean_type.h"
 #include "codegen/type/decimal_type.h"
@@ -512,6 +511,17 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
 
     curr_null_bitmap.MergeValues(valid_partial, null_byte_snapshot);
   }
+}
+
+void Aggregation::MergeDistinct(CodeGen &codegen, llvm::Value *space,
+                                uint32_t index,
+                                const codegen::Value &val) const {
+  // TODO: Implement me
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  (void)codegen;
+  (void)space;
+  (void)index;
+  (void)val;
 }
 
 }  // namespace codegen

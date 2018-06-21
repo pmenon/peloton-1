@@ -29,11 +29,11 @@ std::unique_ptr<Query> QueryCompiler::Compile(
     const planner::AbstractPlan &root, const QueryParametersMap &parameters_map,
     ExecutionConsumer &result_consumer, CompileStats *stats) {
   // The query statement we compile
-  std::unique_ptr<Query> query{new Query(root)};
+  std::unique_ptr<Query> query(new Query(root));
 
   // Set up the compilation context
-  CompilationContext context{query->GetCodeContext(), query->GetQueryState(),
-                             parameters_map, result_consumer};
+  CompilationContext context(query->GetCodeContext(), query->GetQueryState(),
+                             parameters_map, result_consumer);
 
   // Perform the compilation
   context.GeneratePlan(*query, stats);
@@ -45,22 +45,22 @@ std::unique_ptr<Query> QueryCompiler::Compile(
 // Check if the given query can be compiled. This search is not exhaustive ...
 bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan) {
   switch (plan.GetPlanNodeType()) {
-    case PlanNodeType::SEQSCAN:
-    case PlanNodeType::CSVSCAN:
-    case PlanNodeType::ORDERBY:
-    case PlanNodeType::DELETE:
-    case PlanNodeType::INSERT:
-    case PlanNodeType::HASH:
-    case PlanNodeType::UPDATE: {
-      break;
-    }
     case PlanNodeType::AGGREGATE_V2: {
-      const auto &agg_plan = static_cast<const planner::AggregatePlan &>(plan);
+      auto &agg_plan = static_cast<const planner::AggregatePlan &>(plan);
       for (const auto &agg_term : agg_plan.GetUniqueAggTerms()) {
         if (agg_term.distinct) {
           return false;
         }
       }
+      break;
+    }
+    case PlanNodeType::CSVSCAN:
+    case PlanNodeType::DELETE:
+    case PlanNodeType::HASH:
+    case PlanNodeType::INSERT:
+    case PlanNodeType::ORDERBY:
+    case PlanNodeType::SEQSCAN:
+    case PlanNodeType::UPDATE: {
       break;
     }
     case PlanNodeType::PROJECTION: {

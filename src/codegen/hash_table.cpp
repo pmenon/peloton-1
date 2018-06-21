@@ -16,11 +16,16 @@
 #include "codegen/lang/if.h"
 #include "codegen/lang/loop.h"
 #include "codegen/proxy/hash_table_proxy.h"
+#include "codegen/type/integer_type.h"
 #include "common/exception.h"
 #include "type/type_id.h"
 
 namespace peloton {
 namespace codegen {
+
+// The global attribute information instance used to populate a row's hash value
+const planner::AttributeInfo HashTable::kHashAI{type::Integer::Instance(), 0,
+                                                "hash"};
 
 HashTable::HashTable() {
   // This constructor shouldn't generally be used at all, but there are
@@ -31,12 +36,6 @@ HashTable::HashTable(CodeGen &codegen, const std::vector<type::Type> &key_type,
                      uint32_t value_size)
     : value_size_(value_size) {
   key_storage_.Setup(codegen, key_type);
-}
-
-void HashTable::Init(UNUSED_ATTRIBUTE CodeGen &codegen,
-                     UNUSED_ATTRIBUTE llvm::Value *ht_ptr) const {
-  throw NotImplementedException{
-      "Init with no ExecutorContext not supported in HashTable"};
 }
 
 void HashTable::Init(CodeGen &codegen, llvm::Value *exec_ctx,
@@ -50,8 +49,8 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
                               llvm::Value *hash,
                               const std::vector<codegen::Value> &key,
                               InsertMode insert_mode,
-                              ProbeCallback &probe_callback,
-                              InsertCallback &insert_callback) const {
+                              ProbeCallback *probe_callback,
+                              InsertCallback *insert_callback) const {
   llvm::BasicBlock *cont_bb =
       llvm::BasicBlock::Create(codegen.GetContext(), "cont");
 
@@ -95,7 +94,9 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
       lang::If key_match(codegen, keys_are_equal.GetValue(), "keyMatch");
       {
         // We found a duplicate key, issue the probe callback
-        probe_callback.ProcessEntry(codegen, values_area);
+        if (probe_callback != nullptr) {
+          probe_callback->ProcessEntry(codegen, values_area);
+        }
         key_match.EndIf(cont_bb);
       }
       hash_match.EndIf();
@@ -106,41 +107,35 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
     chain_loop.LoopEnd(codegen->CreateICmpNE(entry, null), {entry});
   }
 
-  // No entry found, insert a new one
-  llvm::Value *ptr = nullptr;
-  switch (insert_mode) {
-    case InsertMode::Normal: {
-      ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
-      break;
-    }
-    case InsertMode::Partitioned: {
-      ptr = codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
-      break;
-    }
-    default: {
-      throw Exception(
-          "Lazy insertions not supported in ProbeOrInsert. Are you sure you "
-          "know what you're doing?");
-    }
-  };
+  if (insert_callback != nullptr) {
+    // No entry found, insert a new one
+    llvm::Value *ptr = nullptr;
+    switch (insert_mode) {
+      case InsertMode::Normal: {
+        ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
+        break;
+      }
+      case InsertMode::Partitioned: {
+        ptr =
+            codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
+        break;
+      }
+      default: {
+        throw Exception(
+            "Lazy insertions not supported in ProbeOrInsert. Are you sure you "
+            "know what you're doing?");
+      }
+    };
 
-  // (5)
-  llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
-  insert_callback.StoreValue(codegen, data_space_ptr);
+    llvm::Value *value_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
+    insert_callback->StoreValue(codegen, value_space_ptr);
+  }
 
   // Ending block
   codegen->CreateBr(cont_bb);
   codegen->GetInsertBlock()->getParent()->getBasicBlockList().push_back(
       cont_bb);
   codegen->SetInsertPoint(cont_bb);
-}
-
-HashTable::ProbeResult HashTable::ProbeOrInsert(
-    UNUSED_ATTRIBUTE CodeGen &codegen, UNUSED_ATTRIBUTE llvm::Value *ht_ptr,
-    UNUSED_ATTRIBUTE llvm::Value *hash,
-    UNUSED_ATTRIBUTE const std::vector<codegen::Value> &key) const {
-  throw NotImplementedException{
-      "ProbeOrInsert returning probe result not support in HashTable"};
 }
 
 void HashTable::Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
@@ -196,7 +191,7 @@ void HashTable::MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
   llvm::Value *null = codegen.NullPtr(entry_type->getPointerTo());
 
   const auto &key_storage = key_storage_;
-  const auto &load_key = [&entry_type, &key_storage](
+  const auto load_key = [&entry_type, &key_storage](
       CodeGen &codegen, llvm::Value *entry, std::vector<codegen::Value> &keys) {
     llvm::Value *entry_keys_ptr =
         codegen->CreateConstInBoundsGEP2_32(entry_type, entry, 1, 0);

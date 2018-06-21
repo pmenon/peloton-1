@@ -99,6 +99,16 @@ class Aggregation {
                               llvm::Value *new_vals) const;
 
   /**
+   *
+   * @param codegen
+   * @param space
+   * @param index
+   * @param val
+   */
+  void MergeDistinct(CodeGen &codegen, llvm::Value *space, uint32_t index,
+                     const codegen::Value &val) const;
+
+  /**
    * Get the total number of bytes needed to store all aggregate values
    *
    * @return Total size, in bytes, of all aggregates
@@ -178,7 +188,6 @@ class Aggregation {
   void DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
                       const AggregateInfo &agg_info,
                       const codegen::Value &next) const;
-
 
   /**
    *

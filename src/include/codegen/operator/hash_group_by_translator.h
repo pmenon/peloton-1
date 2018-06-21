@@ -25,21 +25,18 @@ class AggregatePlan;
 namespace codegen {
 
 /**
- * This is the primary translator for hash-based aggregations.
+ * This is the primary translator for all hash-based aggregations.
  */
 class HashGroupByTranslator : public OperatorTranslator {
  public:
   // Global/configurable variable controlling whether hash aggregations prefetch
   static std::atomic<bool> kUsePrefetch;
 
-  // Constructor
   HashGroupByTranslator(const planner::AggregatePlan &group_by,
                         CompilationContext &context, Pipeline &pipeline);
 
-  // Codegen any initialization work for this operator
   void InitializeQueryState() override;
 
-  // Define any helper functions this translator needs
   void DefineAuxiliaryFunctions() override;
 
   void RegisterPipelineState(PipelineContext &pipeline_ctx) override;
@@ -47,34 +44,38 @@ class HashGroupByTranslator : public OperatorTranslator {
   void FinishPipeline(PipelineContext &context) override;
   void TearDownPipelineState(PipelineContext &pipeline_ctx) override;
 
-  // The method that produces new tuples
   void Produce() const override;
 
-  // The method that consumes tuples from child operators
   void Consume(ConsumerContext &context, RowBatch::Row &row) const override;
   void Consume(ConsumerContext &context, RowBatch &batch) const override;
 
-  // Codegen any cleanup work for this translator
   void TearDownQueryState() override;
 
  private:
-  // These helper classes we defined later
+  // These are helper classes whose definitions aren't needed here, but are
+  // defined later
   class AggregateFinalizer;
   class AggregateAccess;
   class ConsumerProbe;
   class ConsumerInsert;
   class ProduceResults;
   class ParallelMerge;
+  class IterateDistinctTable_MergeAggregates;
 
  private:
-  void CollectHashKeys(RowBatch::Row &row,
-                       std::vector<codegen::Value> &key) const;
+  bool HasDistinctAggregates() const { return !distinct_agg_infos_.empty(); }
+
+  void CollectGroupingKey(RowBatch::Row &row,
+                          std::vector<codegen::Value> &key) const;
 
   // Estimate the size of the constructed hash table
   uint64_t EstimateHashTableSize() const;
 
   // Should this operator employ prefetching?
   bool UsePrefetching() const;
+
+  //
+  void MergeDistinctAggregates() const;
 
  private:
   // The pipeline forming all child operators of this aggregation
@@ -84,8 +85,23 @@ class HashGroupByTranslator : public OperatorTranslator {
   QueryState::Id hash_table_id_;
   PipelineContext::Id tl_hash_table_id_;
 
-  // The hash table
+  // The main hash table
   HashTable hash_table_;
+
+  // These vectors track the IDs of all hash tables used for distinct aggregates
+  struct DistinctInfo {
+    uint32_t agg_pos;
+    QueryState::Id hash_table_id;
+    PipelineContext::Id tl_hash_table_id;
+    HashTable hash_table;
+    DistinctInfo(uint32_t _agg_pos, QueryState::Id _hash_table_id,
+                 PipelineContext::Id _tl_hash_table_id, HashTable &&_hash_table)
+        : agg_pos(_agg_pos),
+          hash_table_id(_hash_table_id),
+          tl_hash_table_id(_tl_hash_table_id),
+          hash_table(_hash_table) {}
+  };
+  std::vector<DistinctInfo> distinct_agg_infos_;
 
   // The aggregation handler
   Aggregation aggregation_;
