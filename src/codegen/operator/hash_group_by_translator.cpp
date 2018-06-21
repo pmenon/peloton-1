@@ -376,6 +376,11 @@ HashGroupByTranslator::HashGroupByTranslator(
     }
 
     if (agg_term.distinct) {
+      if (agg_term.agg_type == ExpressionType::AGGREGATE_MIN ||
+          agg_term.agg_type == ExpressionType::AGGREGATE_MAX) {
+        continue;
+      }
+
       // Allocate a hash table
       QueryState::Id ht_id = query_state.RegisterState(
           "distinctHT", HashTableProxy::GetType(codegen));
@@ -414,8 +419,9 @@ void HashGroupByTranslator::InitializeQueryState() {
 
   // Initialize tables for distinct aggregates
   for (const auto &distinct_agg_info : distinct_agg_infos_) {
-    hash_table_.Init(codegen, exec_ctx_ptr,
-                     LoadStatePtr(distinct_agg_info.hash_table_id));
+    const HashTable &distinct_table = distinct_agg_info.hash_table;
+    distinct_table.Init(codegen, exec_ctx_ptr,
+                        LoadStatePtr(distinct_agg_info.hash_table_id));
   }
 }
 
@@ -728,8 +734,9 @@ void HashGroupByTranslator::TearDownQueryState() {
 
   // Destroy tables for distinct aggregates
   for (const auto &distinct_agg_info : distinct_agg_infos_) {
-    hash_table_.Destroy(GetCodeGen(),
-                        LoadStatePtr(distinct_agg_info.hash_table_id));
+    const HashTable &distinct_table = distinct_agg_info.hash_table;
+    distinct_table.Destroy(GetCodeGen(),
+                           LoadStatePtr(distinct_agg_info.hash_table_id));
   }
 }
 
@@ -796,12 +803,12 @@ void HashGroupByTranslator::InitializePipelineState(
    */
 
   for (const auto &distinct_agg_info : distinct_agg_infos_) {
-    const HashTable &hash_table = distinct_agg_info.hash_table;
+    const HashTable &distinct_hash_table = distinct_agg_info.hash_table;
 
     llvm::Value *tl_distinct_ht_ptr =
         pipeline_ctx.LoadStatePtr(codegen, distinct_agg_info.tl_hash_table_id);
 
-    hash_table.Init(codegen, exec_ctx_ptr, tl_distinct_ht_ptr);
+    distinct_hash_table.Init(codegen, exec_ctx_ptr, tl_distinct_ht_ptr);
   }
 }
 
@@ -878,12 +885,12 @@ void HashGroupByTranslator::TearDownPipelineState(
    */
 
   for (const auto &distinct_agg_info : distinct_agg_infos_) {
-    const HashTable &hash_table = distinct_agg_info.hash_table;
+    const HashTable &distinct_hash_table = distinct_agg_info.hash_table;
 
     llvm::Value *tl_distinct_ht_ptr =
         pipeline_ctx.LoadStatePtr(codegen, distinct_agg_info.tl_hash_table_id);
 
-    hash_table.Destroy(codegen, tl_distinct_ht_ptr);
+    distinct_hash_table.Destroy(codegen, tl_distinct_ht_ptr);
   }
 }
 
