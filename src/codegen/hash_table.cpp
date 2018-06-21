@@ -139,12 +139,12 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
 }
 
 void HashTable::Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                       const std::vector<codegen::Value> &keys,
+                       const std::vector<codegen::Value> &key,
                        HashTable::InsertMode mode,
                        HashTable::InsertCallback &callback) const {
   // Calculate the hash
   llvm::Value *hash_val =
-      hash != nullptr ? hash : Hash::HashValues(codegen, keys);
+      hash != nullptr ? hash : Hash::HashValues(codegen, key);
 
   llvm::Value *ptr = nullptr;
   switch (mode) {
@@ -163,7 +163,7 @@ void HashTable::Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
   }
 
   // Invoke the callback to let her store the payload
-  llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, keys);
+  llvm::Value *data_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
   callback.StoreValue(codegen, data_space_ptr);
 }
 

@@ -31,8 +31,182 @@ namespace codegen {
  */
 class HashTable {
  public:
-  // A global pointer for attribute hashes
+  /// A global pointer for attribute hashes
   static const planner::AttributeInfo kHashAI;
+
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Forward declaration of helper classes
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  class HashTableAccess;
+  class ProbeCallback;
+  class InsertCallback;
+  class MergeCallback;
+  class IterateCallback;
+  class VectorizedIterateCallback;
+
+  enum class InsertMode { Normal, Lazy, Partitioned };
+
+ public:
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Main HashTable interface
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  HashTable();
+  HashTable(CodeGen &codegen, const std::vector<type::Type> &key_type,
+            uint32_t value_size);
+
+  /**
+   * Initialize the hash table instance.
+   *
+   * @param codegen The codegen instance
+   * @param exec_ctx A pointer to the executor::ExecutorContext
+   * @param ht_ptr A pointer to the hash table we'll initialize
+   */
+  void Init(CodeGen &codegen, llvm::Value *exec_ctx, llvm::Value *ht_ptr) const;
+
+  /**
+   * Probe the hash table and invoke the provided probe callback if a key match
+   * is found. Otherwise, a new entry is inserted into the hash table with the
+   * provided key and the insert callback is invoked to serialize the payload
+   * data into the table.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we're modifying
+   * @param hash The (optional) hash value for the key
+   * @param key The key to probe with
+   * @param insert_mode The mode, either regular or partitioned, to perform the
+   * insertion
+   * @param probe_callback The callback invoked when a key match is found
+   * @param insert_callback The callback invoked when no key match exists
+   */
+  void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
+                     const std::vector<codegen::Value> &key,
+                     InsertMode insert_mode, ProbeCallback *probe_callback,
+                     InsertCallback *insert_callback) const;
+
+  /**
+   * Perform a blind insert into the hash table.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we're inserting into
+   * @param hash The (optional) hash value for the key
+   * @param key The key to insert
+   * @param mode The mode (regular, lazy or partitioned) to insert with
+   * @param callback The callback invoked to serialize the value into the table
+   */
+  void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
+              const std::vector<codegen::Value> &key, InsertMode mode,
+              InsertCallback &callback) const;
+
+  /**
+   * Build a hash table over all tuple data materialized in the provided hash
+   * table's value space.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we'll build lazily
+   */
+  void BuildLazy(CodeGen &codegen, llvm::Value *ht_ptr) const;
+
+  /**
+   * Reserve enough space in the provided hash table to store all elements
+   * contained in each of the thread-local hash tables in the provided thread
+   * states object. It is assumed that each of the thread-local tables were also
+   * build lazily.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the main hash table we'll reserve/resize
+   * @param thread_states A pointer to the thread states object where all thread
+   * local hash tables are stored
+   * @param ht_state_offset The offset in an individual thread's state
+   * ThreadState object where the hash table instance exists.
+   */
+  void ReserveLazy(CodeGen &codegen, llvm::Value *ht_ptr,
+                   llvm::Value *thread_states, uint32_t ht_state_offset) const;
+
+  /**
+   * Merge the contents of the given thread-local hash table into the provided
+   * main global hash table.
+   *
+   * @param codegen The codegen instance
+   * @param global_ht The global hash table that will accept new data
+   * @param local_ht The thread-local table we'll read
+   */
+  void MergeLazyUnfinished(CodeGen &codegen, llvm::Value *global_ht,
+                           llvm::Value *local_ht) const;
+
+  /**
+   * Merge all data stored in the provided overflow partition into the provided
+   * hash table. It is assumed that the partition list is a list of hash table
+   * entries with the same key storage format as the table we're merging into.
+   * The callback is invoked to merge the contents of an individual entry in the
+   * overflow partition into an entry in the hash table. If no match is found,
+   * a new entry is inserted into the hash table with the key and value taken
+   * from the partition entry.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we'll merge the partition data
+   * into
+   * @param partitions A linked list of overflow partition hash table entries
+   * @param callback The callback invoked for each key match to merge contents
+   * of the partition entry and the hash table entry
+   */
+  void MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
+                      llvm::Value *partitions, MergeCallback &callback) const;
+
+  /**
+   * Iterate over all entries in the hash table, tuple-at-a-time.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we'll iterate over
+   * @param callback The callback invoked for each entry in the table
+   */
+  void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
+               IterateCallback &callback) const;
+
+  /**
+   * Iterate over all entries in the hash table using a vectorized technique.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we'll iterate over
+   * @param selection_vector The selection vector used to reference entries
+   * @param callback The callback invoked for each batch of table data
+   */
+  void VectorizedIterate(CodeGen &codegen, llvm::Value *ht_ptr,
+                         Vector &selection_vector,
+                         VectorizedIterateCallback &callback) const;
+
+  /**
+   * Find all entries that match the provided key, invoking the provided
+   * callback for each match.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we're probing
+   * @param key The key to probe
+   * @param callback The callback invoked for each match
+   */
+  void FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
+               const std::vector<codegen::Value> &key,
+               IterateCallback &callback) const;
+
+  /**
+   * Destroy the resources allocated by the provided hash table.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we're destroying
+   */
+  void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
+
+ public:
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Helper class definitions
+  ///
+  //////////////////////////////////////////////////////////////////////////////
 
   /**
    * This callback functor is used when probing the hash table for a given
@@ -118,8 +292,6 @@ class HashTable {
                               llvm::Value *values) const = 0;
   };
 
-  class HashTableAccess;
-
   /**
    * A callback used when performing a batched/vectorized iteration over the
    * entries in the hash table. Iteration may be over the entire table, or a
@@ -173,49 +345,6 @@ class HashTable {
     virtual llvm::Value *BucketValue(CodeGen &codegen,
                                      llvm::Value *index) const = 0;
   };
-
-  enum class InsertMode { Normal, Lazy, Partitioned };
-
- public:
-  // Constructor
-  HashTable();
-  HashTable(CodeGen &codegen, const std::vector<type::Type> &key_type,
-            uint32_t value_size);
-
-  void Init(CodeGen &codegen, llvm::Value *exec_ctx, llvm::Value *ht_ptr) const;
-
-  void ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-                     const std::vector<codegen::Value> &key,
-                     InsertMode insert_mode, ProbeCallback *probe_callback,
-                     InsertCallback *insert_callback) const;
-
-  void Insert(CodeGen &codegen, llvm::Value *ht_ptr, llvm::Value *hash,
-              const std::vector<codegen::Value> &keys, InsertMode mode,
-              InsertCallback &callback) const;
-
-  void BuildLazy(CodeGen &codegen, llvm::Value *ht_ptr) const;
-
-  void ReserveLazy(CodeGen &codegen, llvm::Value *ht_ptr,
-                   llvm::Value *thread_states, uint32_t ht_state_offset) const;
-
-  void MergeLazyUnfinished(CodeGen &codegen, llvm::Value *global_ht,
-                           llvm::Value *local_ht) const;
-
-  void MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
-                      llvm::Value *partitions, MergeCallback &callback) const;
-
-  void Iterate(CodeGen &codegen, llvm::Value *ht_ptr,
-               IterateCallback &callback) const;
-
-  void VectorizedIterate(CodeGen &codegen, llvm::Value *ht_ptr,
-                         Vector &selection_vector,
-                         VectorizedIterateCallback &callback) const;
-
-  void FindAll(CodeGen &codegen, llvm::Value *ht_ptr,
-               const std::vector<codegen::Value> &key,
-               IterateCallback &callback) const;
-
-  void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
  private:
   // The size of the payload value store in the hash table
