@@ -710,6 +710,8 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
    */
 
   for (const auto &distinct_agg_info : distinct_agg_infos_) {
+    const HashTable &distinct_hash_table = distinct_agg_info.hash_table;
+
     // The key used to insert into the distinct table
     codegen::Value distinct_val = row.DeriveValue(
         codegen, *agg_terms[distinct_agg_info.agg_pos].expression);
@@ -722,9 +724,9 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
         LoadStatePtr(parallel ? distinct_agg_info.tl_hash_table_id
                               : distinct_agg_info.hash_table_id);
 
-    // Insert
-    hash_table_.ProbeOrInsert(codegen, ht_ptr, nullptr /* hash value */,
-                              distinct_key, mode, nullptr, nullptr);
+    // Insert. We don't need a probe or insert callback, hence the NULL args.
+    distinct_hash_table.ProbeOrInsert(codegen, ht_ptr, nullptr /* hash value */,
+                                      distinct_key, mode, nullptr, nullptr);
   }
 }
 

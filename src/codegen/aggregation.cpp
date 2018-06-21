@@ -338,50 +338,36 @@ void Aggregation::AdvanceValues(
 void Aggregation::FinalizeValues(
     CodeGen &codegen, llvm::Value *space,
     std::vector<codegen::Value> &final_vals) const {
-  std::map<std::pair<uint32_t, ExpressionType>, codegen::Value> internal_vals;
+  std::map<std::pair<uint32_t, ExpressionType>, codegen::Value> all_vals;
 
   // The null bitmap tracker
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
 
   for (const auto &agg_info : aggregate_infos_) {
+    codegen::Value final_val;
+
     ExpressionType agg_type = agg_info.aggregate_type;
     switch (agg_type) {
       case ExpressionType::AGGREGATE_COUNT:
       case ExpressionType::AGGREGATE_COUNT_STAR: {
         // Neither COUNT(...) or COUNT(*) can ever return NULL, so no NULL-check
-        codegen::Value final_val =
+        final_val =
             storage_.GetValueSkipNull(codegen, space, agg_info.storage_index);
-
-        if (agg_info.is_internal) {
-          internal_vals.emplace(std::make_pair(agg_info.source_index, agg_type),
-                                final_val);
-        } else {
-          final_vals.push_back(final_val);
-        }
-
         break;
       }
       case ExpressionType::AGGREGATE_SUM:
       case ExpressionType::AGGREGATE_MIN:
       case ExpressionType::AGGREGATE_MAX: {
-        codegen::Value final_val = storage_.GetValue(
-            codegen, space, agg_info.storage_index, null_bitmap);
-
-        if (agg_info.is_internal) {
-          internal_vals.emplace(std::make_pair(agg_info.source_index, agg_type),
-                                final_val);
-        } else {
-          final_vals.push_back(final_val);
-        }
-
+        final_val = storage_.GetValue(codegen, space, agg_info.storage_index,
+                                      null_bitmap);
         break;
       }
       case ExpressionType::AGGREGATE_AVG: {
         // Collect the final values of the SUM and the COUNT components
-        codegen::Value sum = internal_vals[std::make_pair(
+        codegen::Value sum = all_vals[std::make_pair(
             agg_info.source_index, ExpressionType::AGGREGATE_SUM)];
 
-        codegen::Value count = internal_vals[std::make_pair(
+        codegen::Value count = all_vals[std::make_pair(
             agg_info.source_index, ExpressionType::AGGREGATE_COUNT)];
 
         // Cast the values to DECIMAL
@@ -391,16 +377,7 @@ void Aggregation::FinalizeValues(
             count.CastTo(codegen, type::Decimal::Instance());
 
         // Compute the average
-        codegen::Value final_val =
-            sum_casted.Div(codegen, count_casted, OnError::ReturnNull);
-
-        if (agg_info.is_internal) {
-          internal_vals.emplace(std::make_pair(agg_info.source_index, agg_type),
-                                final_val);
-        } else {
-          final_vals.push_back(final_val);
-        }
-
+        final_val = sum_casted.Div(codegen, count_casted, OnError::ReturnNull);
         break;
       }
       default: {
@@ -408,6 +385,15 @@ void Aggregation::FinalizeValues(
             "Unexpected aggregate type '%s' when finalizing aggregator",
             ExpressionTypeToString(agg_type).c_str()));
       }
+    }
+
+    // Insert into global map
+    all_vals.emplace(std::make_pair(agg_info.source_index, agg_type),
+                     final_val);
+
+    // If the aggregate isn't internal, push the value out
+    if (!agg_info.is_internal) {
+      final_vals.push_back(final_val);
     }
   }
 }
@@ -516,12 +502,16 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
 void Aggregation::MergeDistinct(CodeGen &codegen, llvm::Value *space,
                                 uint32_t index,
                                 const codegen::Value &val) const {
-  // TODO: Implement me
+  PELOTON_ASSERT(index < aggregate_infos_.size());
+  const auto &agg_info = aggregate_infos_[index];
+
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
-  (void)codegen;
-  (void)space;
-  (void)index;
-  (void)val;
+
+  if (!null_bitmap.IsNullable(index)) {
+    DoAdvanceValue(codegen, space, agg_info, val);
+  } else {
+    DoNullCheck(codegen, space, agg_info, val, null_bitmap);
+  }
 }
 
 }  // namespace codegen

@@ -107,27 +107,26 @@ void HashTable::ProbeOrInsert(CodeGen &codegen, llvm::Value *ht_ptr,
     chain_loop.LoopEnd(codegen->CreateICmpNE(entry, null), {entry});
   }
 
-  if (insert_callback != nullptr) {
-    // No entry found, insert a new one
-    llvm::Value *ptr = nullptr;
-    switch (insert_mode) {
-      case InsertMode::Normal: {
-        ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
-        break;
-      }
-      case InsertMode::Partitioned: {
-        ptr =
-            codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
-        break;
-      }
-      default: {
-        throw Exception(
-            "Lazy insertions not supported in ProbeOrInsert. Are you sure you "
-            "know what you're doing?");
-      }
-    };
+  // No entry found, insert a new one
+  llvm::Value *ptr = nullptr;
+  switch (insert_mode) {
+    case InsertMode::Normal: {
+      ptr = codegen.Call(HashTableProxy::Insert, {ht_ptr, hash_val});
+      break;
+    }
+    case InsertMode::Partitioned: {
+      ptr = codegen.Call(HashTableProxy::InsertPartitioned, {ht_ptr, hash_val});
+      break;
+    }
+    default: {
+      throw Exception(
+          "Lazy insertions not supported in ProbeOrInsert. Are you sure you "
+          "know what you're doing?");
+    }
+  };
 
-    llvm::Value *value_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
+  llvm::Value *value_space_ptr = key_storage_.StoreValues(codegen, ptr, key);
+  if (insert_callback != nullptr) {
     insert_callback->StoreValue(codegen, value_space_ptr);
   }
 
