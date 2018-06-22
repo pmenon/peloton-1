@@ -40,6 +40,12 @@ WrappedTuple &WrappedTuple::operator=(const WrappedTuple &o) {
   return *this;
 }
 
+void WrappedTuple::AppendAsString(std::vector<std::string> &str) const {
+  for (const auto &col_val : tuple_) {
+    str.emplace_back(col_val.IsNull() ? "" : col_val.ToString());
+  }
+}
+
 std::string WrappedTuple::ToCSV() const {
   std::string ret;
   for (uint32_t i = 0; i < tuple_.size(); i++) {
