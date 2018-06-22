@@ -337,14 +337,8 @@ bool Schema::operator==(const Schema &other) const {
     return false;
   }
 
-  for (oid_t column_itr = 0; column_itr < other.GetColumnCount();
-       column_itr++) {
-    const Column &column_info = other.GetColumn(column_itr);
-    const Column &other_column_info = GetColumn(column_itr);
-
-    if (column_info != other_column_info) {
-      return false;
-    }
+  if (columns != other.columns) {
+    return false;
   }
 
   return true;

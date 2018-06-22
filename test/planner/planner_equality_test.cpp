@@ -98,32 +98,23 @@ TEST_F(PlannerEqualityTest, Select) {
       {"SELECT * from test", "SELECT * from test", true, true},
       {"SELECT * from test", "SELECT * from test2", false, false},
       {"SELECT * from test", "SELECT * from test where a = 0", false, false},
-      {"SELECT * from test where a = 1", "SELECT * from test where a = 0", true,
-       true},
-      {"SELECT * from test where b = 1", "SELECT * from test where b > 0",
-       false, false},
-      {"SELECT * from test where a = 1", "SELECT * from test where c = 0",
-       false, false},
-      {"SELECT a from test where b = 1", "SELECT c from test where b = 0",
-       false, false},
-      {"SELECT a,b from test where b = 1", "SELECT b,a from test where b = 0",
-       false, false},
-      {"SELECT a,b from test where b = 1", "SELECT a,b from test where b = $1",
-       true, true},
-      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = 9",
-       true, true},
+      {"SELECT * from test where a = 1", "SELECT * from test where a = 0", true, true},
+      {"SELECT * from test where b = 1", "SELECT * from test where b > 0", false, false},
+      {"SELECT * from test where a = 1", "SELECT * from test where c = 0", false, false},
+      {"SELECT a from test where b = 1", "SELECT c from test where b = 0", false, false},
+      {"SELECT a,b from test where b = 1", "SELECT b,a from test where b = 0", false, false},
+      {"SELECT a,b from test where b = 1", "SELECT a,b from test where b = $1", true, true},
+      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = 9", true, true},
       {"SELECT * from test where b = 1 order by c",
        "SELECT * from test where b = 0 order by a", false, false},
       {"SELECT * from test where b = 1 order by c DESC",
        "SELECT * from test where b = 0 order by c ASC", false, false},
       {"SELECT * from test where b = 1 order by c+a",
        "SELECT * from test where b = 0 order by a+c", false, false},
-      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = $1",
-       true, true},
+      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = $1", true, true},
       {"SELECT a,b from test where b = $1",
        "SELECT a,b from test where b = null", false, false},
-      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = 1",
-       true, true},
+      {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = 1", true, true},
       {"SELECT a,b from test where b = $1", "SELECT a,b from test where b = $1", true, true},
       {"SELECT a,b from test where b = $1",
        "SELECT a,b from test where b = null", false, false},
@@ -132,8 +123,8 @@ TEST_F(PlannerEqualityTest, Select) {
        "SELECT a,b from test where b = 1", false, false},
       {"SELECT DISTINCT a from test where b = 1",
        "SELECT a from test where b = 0", false, false},
-      {"SELECT 1 from test", "SELECT 1 from test", false, false},
-      {"SELECT 1", "SELECT 2", false, false},
+      {"SELECT 1 from test", "SELECT 1 from test", true, true},
+      {"SELECT 1", "SELECT 2", true, true},
       {"SELECT * FROM test, test2 WHERE test.a = 1 AND test2.b = 0",
        "SELECT * FROM test, test2 WHERE test.a = 1 AND test2.b = 0", true, true},
       {"SELECT test.a, test.b, test3.b, test2.c FROM test2, test, test3 "
@@ -146,13 +137,15 @@ TEST_F(PlannerEqualityTest, Select) {
        "SELECT * from test inner join test2 on test.a > test2.a", false, false},
       {"SELECT * from test inner join test2 on test.a < 1 + test2.a",
        "SELECT * from test inner join test2 on test.a > 1 - test2.a", false, false},
+      {"SELECT a, sum(distinct b) from test group by a order by a",
+       "SELECT a, sum(distinct b) from test group by a order by a", true, true},
   };
   // clang-format on
-  for (uint32_t i = 0; i < items.size(); i++) {
+
+  for (auto &item : items) {
     auto &txn_manager = concurrency::TransactionManagerFactory::GetInstance();
     auto txn = txn_manager.BeginTransaction();
 
-    TestItem &item = items[i];
     LOG_DEBUG("Checking equality between (%s) and (%s)", item.q1.c_str(),
               item.q2.c_str());
     auto plan_1 = GeneratePlanWithOptimizer(optimizer, item.q1, txn);
@@ -166,10 +159,13 @@ TEST_F(PlannerEqualityTest, Select) {
     plan_2->PerformBinding(context_2);
 
     auto hash_equal = (plan_1->Hash() == plan_2->Hash());
-    EXPECT_EQ(item.hash_equal, hash_equal);
+    EXPECT_EQ(item.hash_equal, hash_equal) << "Hashes for plan '" << item.q1
+                                           << "' and '" << item.q2
+                                           << "' are not equal!";
 
     auto is_equal = (*plan_1 == *plan_2);
-    EXPECT_EQ(item.is_equal, is_equal);
+    EXPECT_EQ(item.is_equal, is_equal) << "Plan '" << item.q1 << "' and '"
+                                       << item.q2 << "' are not equal!";
   }
 }
 

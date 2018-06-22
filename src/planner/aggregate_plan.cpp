@@ -237,34 +237,32 @@ bool AggregatePlan::operator==(const AbstractPlan &rhs) const {
   auto &other = static_cast<const planner::AggregatePlan &>(rhs);
 
   // Predicate
-  auto *pred = GetPredicate();
-  auto *other_pred = other.GetPredicate();
-  if ((pred == nullptr && other_pred != nullptr) ||
-      (pred != nullptr && other_pred == nullptr)) {
+  if ((predicate_ == nullptr && other.predicate_ != nullptr) ||
+      (predicate_ != nullptr && other.predicate_ == nullptr)) {
     return false;
   }
 
-  if (pred && *pred != *other_pred) {
+  if (predicate_ != nullptr && *predicate_ != *other.predicate_) {
     return false;
   }
 
   // UniqueAggTerms
-  if (!std::equal(unique_agg_terms_.begin(), unique_agg_terms_.end(),
-                  other.unique_agg_terms_.begin())) {
+  if (GetUniqueAggTerms() != other.GetUniqueAggTerms()) {
     return false;
   }
 
   // Project Info
-  auto *proj_info = GetProjectInfo();
-  auto *other_proj_info = other.GetProjectInfo();
-  if ((proj_info == nullptr && other_proj_info != nullptr) ||
-      (proj_info != nullptr && other_proj_info == nullptr))
+  if ((project_info_ == nullptr && other.project_info_ != nullptr) ||
+      (project_info_ != nullptr && other.project_info_ == nullptr)) {
     return false;
-  if (proj_info && *proj_info != *other_proj_info) return false;
+  }
+
+  if (project_info_ != nullptr && *project_info_ != *other.project_info_) {
+    return false;
+  }
 
   // Group by
-  if (!std::equal(groupby_col_ids_.begin(), groupby_col_ids_.end(),
-                  other.groupby_col_ids_.begin())) {
+  if (GetGroupbyColIds() != other.GetGroupbyColIds()) {
     return false;
   }
 
