@@ -89,6 +89,32 @@ void AggregatePlan::AggTerm::PerformBinding(bool is_global,
   }
 }
 
+hash_t AggregatePlan::AggTerm::Hash() const {
+  hash_t hash = HashUtil::Hash(&agg_type);
+
+  if (expression != nullptr) {
+    hash = HashUtil::CombineHashes(hash, expression->Hash());
+  }
+
+  return HashUtil::CombineHashes(hash, HashUtil::Hash(&distinct));
+}
+
+bool AggregatePlan::AggTerm::operator==(const AggTerm &rhs) const {
+  if (agg_type != rhs.agg_type) {
+    return false;
+  }
+
+  if (expression != nullptr && *expression != *rhs.expression) {
+    return false;
+  }
+
+  if (distinct != rhs.distinct) {
+    return false;
+  }
+
+  return true;
+}
+
 AggregatePlan::AggTerm AggregatePlan::AggTerm::Copy() const {
   std::unique_ptr<expression::AbstractExpression> expr_copy(expression->Copy());
   return AggTerm(agg_type, std::move(expr_copy), distinct);
@@ -175,21 +201,6 @@ std::unique_ptr<AbstractPlan> AggregatePlan::Copy() const {
   return std::unique_ptr<AbstractPlan>(new_plan);
 }
 
-hash_t AggregatePlan::Hash(
-    const std::vector<planner::AggregatePlan::AggTerm> &agg_terms) const {
-  hash_t hash = 0;
-
-  for (auto &agg_term : agg_terms) {
-    hash = HashUtil::CombineHashes(hash, HashUtil::Hash(&agg_term.agg_type));
-
-    if (agg_term.expression != nullptr)
-      hash = HashUtil::CombineHashes(hash, agg_term.expression->Hash());
-
-    hash = HashUtil::CombineHashes(hash, HashUtil::Hash(&agg_term.distinct));
-  }
-  return hash;
-}
-
 hash_t AggregatePlan::Hash() const {
   auto type = GetPlanNodeType();
   hash_t hash = HashUtil::Hash(&type);
@@ -198,7 +209,9 @@ hash_t AggregatePlan::Hash() const {
     hash = HashUtil::CombineHashes(hash, GetPredicate()->Hash());
   }
 
-  hash = HashUtil::CombineHashes(hash, Hash(GetUniqueAggTerms()));
+  for (const auto &agg_term : GetUniqueAggTerms()) {
+    hash = HashUtil::CombineHashes(hash, agg_term.Hash());
+  }
 
   if (GetProjectInfo() != nullptr) {
     hash = HashUtil::CombineHashes(hash, GetProjectInfo()->Hash());
@@ -216,23 +229,10 @@ hash_t AggregatePlan::Hash() const {
   return HashUtil::CombineHashes(hash, AbstractPlan::Hash());
 }
 
-bool AggregatePlan::AreEqual(
-    const std::vector<planner::AggregatePlan::AggTerm> &A,
-    const std::vector<planner::AggregatePlan::AggTerm> &B) const {
-  if (A.size() != B.size()) return false;
-
-  for (size_t i = 0; i < A.size(); i++) {
-    if (A[i].agg_type != B[i].agg_type) return false;
-
-    if (A[i].expression && (*A[i].expression != *B[i].expression)) return false;
-
-    if (A[i].distinct != B[i].distinct) return false;
-  }
-  return true;
-}
-
 bool AggregatePlan::operator==(const AbstractPlan &rhs) const {
-  if (GetPlanNodeType() != rhs.GetPlanNodeType()) return false;
+  if (GetPlanNodeType() != rhs.GetPlanNodeType()) {
+    return false;
+  }
 
   auto &other = static_cast<const planner::AggregatePlan &>(rhs);
 
@@ -240,12 +240,19 @@ bool AggregatePlan::operator==(const AbstractPlan &rhs) const {
   auto *pred = GetPredicate();
   auto *other_pred = other.GetPredicate();
   if ((pred == nullptr && other_pred != nullptr) ||
-      (pred != nullptr && other_pred == nullptr))
+      (pred != nullptr && other_pred == nullptr)) {
     return false;
-  if (pred && *pred != *other_pred) return false;
+  }
+
+  if (pred && *pred != *other_pred) {
+    return false;
+  }
 
   // UniqueAggTerms
-  if (!AreEqual(GetUniqueAggTerms(), other.GetUniqueAggTerms())) return false;
+  if (!std::equal(unique_agg_terms_.begin(), unique_agg_terms_.end(),
+                  other.unique_agg_terms_.begin())) {
+    return false;
+  }
 
   // Project Info
   auto *proj_info = GetProjectInfo();
@@ -256,16 +263,18 @@ bool AggregatePlan::operator==(const AbstractPlan &rhs) const {
   if (proj_info && *proj_info != *other_proj_info) return false;
 
   // Group by
-  size_t group_by_col_ids_count = GetGroupbyColIds().size();
-  if (group_by_col_ids_count != other.GetGroupbyColIds().size()) return false;
-
-  for (size_t i = 0; i < group_by_col_ids_count; i++) {
-    if (GetGroupbyColIds()[i] != other.GetGroupbyColIds()[i]) return false;
+  if (!std::equal(groupby_col_ids_.begin(), groupby_col_ids_.end(),
+                  other.groupby_col_ids_.begin())) {
+    return false;
   }
 
-  if (*GetOutputSchema() != *other.GetOutputSchema()) return false;
+  if (*GetOutputSchema() != *other.GetOutputSchema()) {
+    return false;
+  }
 
-  if (GetAggregateStrategy() != other.GetAggregateStrategy()) return false;
+  if (GetAggregateStrategy() != other.GetAggregateStrategy()) {
+    return false;
+  }
 
   return (AbstractPlan::operator==(rhs));
 }

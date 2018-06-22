@@ -46,8 +46,11 @@ class AggregatePlan : public AbstractPlan {
             std::unique_ptr<expression::AbstractExpression> &&expr,
             bool distinct = false);
 
-    // Bindings
     void PerformBinding(bool is_global, BindingContext &binding_context);
+
+    hash_t Hash() const;
+
+    bool operator==(const AggTerm &rhs) const;
 
     AggTerm Copy() const;
   };
@@ -66,12 +69,11 @@ class AggregatePlan : public AbstractPlan {
         output_schema_(output_schema),
         agg_strategy_(aggregate_strategy) {}
 
-  // Bindings
-  void PerformBinding(BindingContext &binding_context) override;
-
-  //===--------------------------------------------------------------------===//
-  // ACCESSORS
-  //===--------------------------------------------------------------------===//
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Read-only Accessors
+  ///
+  //////////////////////////////////////////////////////////////////////////////
 
   bool IsGlobal() const { return GetGroupbyColIds().empty(); }
 
@@ -117,6 +119,14 @@ class AggregatePlan : public AbstractPlan {
 
   const std::vector<oid_t> &GetColumnIds() const { return column_ids_; }
 
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Utils
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
+  void PerformBinding(BindingContext &binding_context) override;
+
   std::unique_ptr<AbstractPlan> Copy() const override;
 
   hash_t Hash() const override;
@@ -127,13 +137,6 @@ class AggregatePlan : public AbstractPlan {
       codegen::QueryParametersMap &map,
       std::vector<peloton::type::Value> &values,
       const std::vector<peloton::type::Value> &values_from_user) override;
-
- private:
-  bool AreEqual(const std::vector<planner::AggregatePlan::AggTerm> &A,
-                const std::vector<planner::AggregatePlan::AggTerm> &B) const;
-
-  hash_t Hash(
-      const std::vector<planner::AggregatePlan::AggTerm> &agg_terms) const;
 
  private:
   /* For projection */
@@ -155,7 +158,7 @@ class AggregatePlan : public AbstractPlan {
   /* Aggregate Strategy */
   const AggregateType agg_strategy_;
 
-  /** @brief Columns involved */
+  /* Columns involved */
   std::vector<oid_t> column_ids_;
 
  private:
