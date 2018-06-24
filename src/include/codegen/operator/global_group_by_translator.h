@@ -13,6 +13,7 @@
 #pragma once
 
 #include "codegen/aggregation.h"
+#include "codegen/hash_table.h"
 #include "codegen/operator/operator_translator.h"
 #include "codegen/pipeline.h"
 
@@ -31,47 +32,28 @@ namespace codegen {
 //===----------------------------------------------------------------------===//
 class GlobalGroupByTranslator : public OperatorTranslator {
  public:
-  // Constructor
   GlobalGroupByTranslator(const planner::AggregatePlan &plan,
                           CompilationContext &context, Pipeline &pipeline);
 
-  // Nothing to initialize
-  void InitializeQueryState() override {}
+  void InitializeQueryState() override;
 
-  // No helper functions
-  void DefineAuxiliaryFunctions() override {}
+  void DefineAuxiliaryFunctions() override;
 
-  // Produce!
   void Produce() const override;
 
-  // Consume!
   void Consume(ConsumerContext &context, RowBatch::Row &row) const override;
 
-  // No state to tear down
-  void TearDownQueryState() override {}
+  void TearDownQueryState() override;
+
+  void RegisterPipelineState(PipelineContext &pipeline_ctx) override;
+  void InitializePipelineState(PipelineContext &pipeline_ctx) override;
+  void FinishPipeline(PipelineContext &pipeline_ctx) override;
+  void TearDownPipelineState(PipelineContext &pipeline_ctx) override;
 
  private:
-  //===--------------------------------------------------------------------===//
-  // An accessor into a single tuple stored in buffered state
-  //===--------------------------------------------------------------------===//
-  class BufferAttributeAccess : public RowBatch::AttributeAccess {
-   public:
-    // Constructor
-    BufferAttributeAccess(const std::vector<codegen::Value> &aggregate_vals,
-                          uint32_t agg_index)
-        : aggregate_vals_(aggregate_vals), agg_index_(agg_index) {}
-
-    Value Access(CodeGen &, RowBatch::Row &) override {
-      return aggregate_vals_[agg_index_];
-    }
-
-   private:
-    // All the vals
-    const std::vector<codegen::Value> &aggregate_vals_;
-
-    // The value this accessor is for
-    uint32_t agg_index_;
-  };
+  /// Helper classes defined later
+  class BufferAttributeAccess;
+  class IterateDistinctTable;
 
  private:
   // The pipeline the child operator of this aggregation belongs to
@@ -82,6 +64,23 @@ class GlobalGroupByTranslator : public OperatorTranslator {
 
   // The ID of our materialization buffer in the runtime state
   QueryState::Id mat_buffer_id_;
+
+  // These vectors track the IDs of all hash tables used for distinct aggregates
+  struct DistinctInfo {
+    uint32_t agg_pos;
+    QueryState::Id hash_table_id;
+    PipelineContext::Id tl_hash_table_id;
+    HashTable hash_table;
+
+    DistinctInfo(uint32_t _agg_pos, QueryState::Id _hash_table_id,
+                 PipelineContext::Id _tl_hash_table_id, HashTable &&_hash_table)
+        : agg_pos(_agg_pos),
+          hash_table_id(_hash_table_id),
+          tl_hash_table_id(_tl_hash_table_id),
+          hash_table(_hash_table) {}
+  };
+
+  std::vector<DistinctInfo> distinct_agg_infos_;
 };
 
 }  // namespace codegen

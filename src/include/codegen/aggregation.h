@@ -36,6 +36,8 @@ namespace codegen {
  */
 class Aggregation {
  public:
+  Aggregation();
+
   /**
    * Configure the aggregation to handle the aggregates of the provided format
    *
@@ -151,7 +153,12 @@ class Aggregation {
     const uint32_t storage_index;
 
     // Is this aggregate purely internal?
-    bool is_internal;
+    bool internal;
+
+    bool distinct;
+
+    AggregateInfo(ExpressionType aggregate_type, uint32_t source_index,
+                  uint32_t storage_index, bool _internal, bool _distinct);
   };
 
  private:
@@ -163,6 +170,14 @@ class Aggregation {
   bool IsGlobal() const { return is_global_; }
 
   /**
+   *
+   * @param agg_info
+   * @return
+   */
+  codegen::Value InitialDistinctValue(
+      CodeGen &codegen, const Aggregation::AggregateInfo &agg_info) const;
+
+  /**
    * Tries to update the given aggregate with the provided update value, but
    * performs a NULL check to determine what and how to update.
    *
@@ -172,9 +187,10 @@ class Aggregation {
    * @param update The delta value we advance the aggregate by
    * @param null_bitmap The NULL bitmap to use
    */
-  void DoNullCheck(CodeGen &codegen, llvm::Value *space,
-                   const AggregateInfo &agg_info, const codegen::Value &update,
-                   UpdateableStorage::NullBitmap &null_bitmap) const;
+  void DoAdvanceNullCheck(CodeGen &codegen, llvm::Value *space,
+                          const AggregateInfo &agg_info,
+                          const codegen::Value &update,
+                          UpdateableStorage::NullBitmap &null_bitmap) const;
 
   /**
    * Advance the aggregate value assuming the current aggregate value IS NOT

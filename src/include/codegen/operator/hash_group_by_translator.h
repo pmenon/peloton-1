@@ -60,7 +60,7 @@ class HashGroupByTranslator : public OperatorTranslator {
   class ConsumerInsert;
   class ProduceResults;
   class ParallelMerge;
-  class IterateDistinctTable_MergeAggregates;
+  class IterateDistinctTable;
 
  private:
   bool HasDistinctAggregates() const { return !distinct_agg_infos_.empty(); }

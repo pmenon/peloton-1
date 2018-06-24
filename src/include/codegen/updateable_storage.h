@@ -29,8 +29,11 @@ class If;
 class UpdateableStorage {
  public:
   /// Constructor
-  UpdateableStorage()
-      : storage_size_(0), storage_type_(nullptr), null_bitmap_type_(nullptr) {}
+  UpdateableStorage(std::string name = "Buf")
+      : name_(std::move(name)),
+        storage_size_(0),
+        storage_type_(nullptr),
+        null_bitmap_type_(nullptr) {}
 
   // Add the given type to the storage format. We return the index that this
   // value can be found it (i.e., the index to pass into Get() to get the value)
@@ -45,20 +48,20 @@ class UpdateableStorage {
   // Get the value at a specific index into the storage area, ignoring whether
   // the value is NULL or not
   codegen::Value GetValueSkipNull(CodeGen &codegen, llvm::Value *space,
-                                  uint64_t index) const;
+                                  uint32_t index) const;
 
   // Like GetValueIgnoreNull(), but this also reads the NULL bitmap to determine
   // if the value is null.
-  codegen::Value GetValue(CodeGen &codegen, llvm::Value *space, uint64_t index,
+  codegen::Value GetValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
                           NullBitmap &null_bitmap) const;
 
   // Set the given value at the specific index in the storage area, ignoring to
   // update the bitmap
-  void SetValueSkipNull(CodeGen &codegen, llvm::Value *space, uint64_t index,
+  void SetValueSkipNull(CodeGen &codegen, llvm::Value *space, uint32_t index,
                         const codegen::Value &value) const;
 
   // Like SetValueIgnoreNull(), but this also updates the NULL bitmap
-  void SetValue(CodeGen &codegen, llvm::Value *space, uint64_t index,
+  void SetValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
                 const codegen::Value &value, NullBitmap &null_bitmap) const;
 
   // Return the format of the storage area
@@ -123,6 +126,9 @@ class UpdateableStorage {
                               int32_t &len_idx) const;
 
  private:
+  // A name for this storage
+  std::string name_;
+
   // The types we store in the storage area
   std::vector<type::Type> schema_;
 

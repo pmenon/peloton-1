@@ -21,10 +21,6 @@
 namespace peloton {
 namespace codegen {
 
-//===----------------------------------------------------------------------===//
-// Add the given type to the storage format. We return the index that this value
-// can be found it (i.e., which index to pass into Get() to get the value)
-//===----------------------------------------------------------------------===//
 uint32_t UpdateableStorage::AddType(const type::Type &type) {
   PELOTON_ASSERT(storage_type_ == nullptr);
   schema_.push_back(type);
@@ -89,7 +85,8 @@ llvm::Type *UpdateableStorage::Finalize(CodeGen &codegen) {
   }
 
   // Construct the finalized types
-  storage_type_ = llvm::StructType::get(codegen.GetContext(), llvm_types, true);
+  storage_type_ =
+      llvm::StructType::create(codegen.GetContext(), llvm_types, name_, true);
   storage_size_ = static_cast<uint32_t>(codegen.SizeOf(storage_type_));
   return storage_type_;
 }
@@ -118,7 +115,7 @@ void UpdateableStorage::FindStoragePositionFor(uint32_t item_index,
 // Get the value at a specific index into the storage area
 codegen::Value UpdateableStorage::GetValueSkipNull(CodeGen &codegen,
                                                    llvm::Value *space,
-                                                   uint64_t index) const {
+                                                   uint32_t index) const {
   PELOTON_ASSERT(storage_type_ != nullptr);
   PELOTON_ASSERT(index < schema_.size());
 
@@ -148,7 +145,7 @@ codegen::Value UpdateableStorage::GetValueSkipNull(CodeGen &codegen,
 }
 
 codegen::Value UpdateableStorage::GetValue(
-    CodeGen &codegen, llvm::Value *space, uint64_t index,
+    CodeGen &codegen, llvm::Value *space, uint32_t index,
     UpdateableStorage::NullBitmap &null_bitmap) const {
   // If the index isn't NULL-able, skip the check
   if (!null_bitmap.IsNullable(index)) {
@@ -157,7 +154,7 @@ codegen::Value UpdateableStorage::GetValue(
 
   codegen::Value null_val, read_val;
 
-  lang::If val_is_null{codegen, null_bitmap.IsNull(codegen, index)};
+  lang::If val_is_null(codegen, null_bitmap.IsNull(codegen, index));
   {
     // If the index has its null-bit set, return NULL
     const auto &type = schema_[index];
@@ -176,7 +173,7 @@ codegen::Value UpdateableStorage::GetValue(
 
 // Get the value at a specific index into the storage area
 void UpdateableStorage::SetValueSkipNull(CodeGen &codegen, llvm::Value *space,
-                                         uint64_t index,
+                                         uint32_t index,
                                          const codegen::Value &value) const {
   llvm::Value *val = nullptr, *len = nullptr, *null = nullptr;
   value.ValuesForMaterialization(codegen, val, len, null);
@@ -202,7 +199,7 @@ void UpdateableStorage::SetValueSkipNull(CodeGen &codegen, llvm::Value *space,
 }
 
 void UpdateableStorage::SetValue(
-    CodeGen &codegen, llvm::Value *space, uint64_t index,
+    CodeGen &codegen, llvm::Value *space, uint32_t index,
     const codegen::Value &value,
     UpdateableStorage::NullBitmap &null_bitmap) const {
   // If the index isn't NULL-able, skip storing the NULL bit
@@ -211,13 +208,11 @@ void UpdateableStorage::SetValue(
     return;
   }
 
-  PELOTON_ASSERT(null_bitmap.IsNullable(index));
-
   // Set the NULL bit
   llvm::Value *null = value.IsNull(codegen);
   null_bitmap.SetNull(codegen, index, null);
 
-  lang::If val_not_null{codegen, codegen->CreateNot(null)};
+  lang::If val_not_null(codegen, codegen->CreateNot(null));
   {
     // If the value isn't NULL, write it into storage
     SetValueSkipNull(codegen, space, index, value);

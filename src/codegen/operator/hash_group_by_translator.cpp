@@ -259,10 +259,10 @@ class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
-class HashGroupByTranslator::IterateDistinctTable_MergeAggregates
+class HashGroupByTranslator::IterateDistinctTable
     : public HashTable::IterateCallback {
  public:
-  IterateDistinctTable_MergeAggregates(const HashTable &agg_table,
+  IterateDistinctTable(const HashTable &agg_table,
                                        llvm::Value *ht_ptr,
                                        const Aggregation &aggregation,
                                        uint32_t agg_pos)
@@ -910,7 +910,7 @@ void HashGroupByTranslator::MergeDistinctAggregates() const {
     const HashTable &hash_table = distinct_agg_info.hash_table;
 
     // Do the merge
-    IterateDistinctTable_MergeAggregates merge_distinct(
+    IterateDistinctTable merge_distinct(
         hash_table_, agg_ht_ptr, aggregation_, distinct_agg_info.agg_pos);
     hash_table.Iterate(codegen, distinct_ht_ptr, merge_distinct);
   }
