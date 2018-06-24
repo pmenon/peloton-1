@@ -284,11 +284,11 @@ class HashTable {
      * matching key-value pair when provided a search key.
      *
      * @param codegen The codegen instance
-     * @param keys The key stored in the hash table
+     * @param key The key stored in the hash table
      * @param values A pointer to a set of bytes where the value is stored
      */
     virtual void ProcessEntry(CodeGen &codegen,
-                              const std::vector<codegen::Value> &keys,
+                              const std::vector<codegen::Value> &key,
                               llvm::Value *values) const = 0;
   };
 
