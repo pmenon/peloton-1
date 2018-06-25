@@ -81,15 +81,14 @@ class Aggregation {
                      const std::vector<codegen::Value> &next) const;
 
   /**
-   * Compute the final values of all the aggregates stored in the provided
-   * storage space, inserting them into the provided output vector.
    *
-   * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
-   * @param[out] final_vals Vector where the final aggregates are stored.
+   * @param codegen
+   * @param space
+   * @param index
+   * @param val
    */
-  void FinalizeValues(CodeGen &codegen, llvm::Value *space,
-                      std::vector<codegen::Value> &final_vals) const;
+  void AdvanceDistinctValue(CodeGen &codegen, llvm::Value *space,
+                            uint32_t index, const codegen::Value &val) const;
 
   /**
    *
@@ -101,14 +100,15 @@ class Aggregation {
                               llvm::Value *new_vals) const;
 
   /**
+   * Compute the final values of all the aggregates stored in the provided
+   * storage space, inserting them into the provided output vector.
    *
-   * @param codegen
-   * @param space
-   * @param index
-   * @param val
+   * @param codegen The codegen instance
+   * @param space A pointer to where all aggregates are contiguously stored
+   * @param[out] final_vals Vector where the final aggregates are stored.
    */
-  void MergeDistinctValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
-                          const codegen::Value &val) const;
+  void FinalizeValues(CodeGen &codegen, llvm::Value *space,
+                      std::vector<codegen::Value> &final_vals) const;
 
   /**
    * Get the total number of bytes needed to store all aggregate values
@@ -162,19 +162,9 @@ class Aggregation {
   };
 
  private:
-  /**
-   * Tries to update the given aggregate with the provided update value, but
-   * performs a NULL check to determine what and how to update.
-   *
-   * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
-   * @param agg_info The aggregate (and information) to update
-   * @param update The delta value we advance the aggregate by
-   * @param null_bitmap The NULL bitmap to use
-   */
-  void DoAdvanceNullCheck(CodeGen &codegen, llvm::Value *space,
+  void AdvanceSingleValue(CodeGen &codegen, llvm::Value *space,
                           const AggregateInfo &agg_info,
-                          const codegen::Value &update,
+                          const codegen::Value &next,
                           UpdateableStorage::NullBitmap &null_bitmap) const;
 
  private:

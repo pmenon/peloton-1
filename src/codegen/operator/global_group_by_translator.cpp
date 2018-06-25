@@ -67,7 +67,7 @@ class GlobalGroupByTranslator::IterateDistinctTable
   void ProcessEntry(CodeGen &codegen, const std::vector<codegen::Value> &key,
                     UNUSED_ATTRIBUTE llvm::Value *values) const override {
     const codegen::Value &distinct = key.back();
-    aggregation_.MergeDistinctValue(codegen, agg_space_, agg_pos_, distinct);
+    aggregation_.AdvanceDistinctValue(codegen, agg_space_, agg_pos_, distinct);
   }
 
   llvm::Value *agg_space_;

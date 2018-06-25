@@ -280,7 +280,7 @@ class HashGroupByTranslator::IterateDistinctTable
             distinct_val(_distinct_val) {}
 
       void ProcessEntry(CodeGen &codegen, llvm::Value *value) const override {
-        aggregation.MergeDistinctValue(codegen, value, agg_pos, distinct_val);
+        aggregation.AdvanceDistinctValue(codegen, value, agg_pos, distinct_val);
       }
 
      private:

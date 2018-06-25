@@ -360,53 +360,50 @@ void Aggregation::CreateInitialValues(
   null_bitmap.WriteBack(codegen);
 }
 
-void Aggregation::DoAdvanceNullCheck(
-    CodeGen &codegen, llvm::Value *space, const AggregateInfo &agg_info,
-    const codegen::Value &update,
+void Aggregation::AdvanceSingleValue(
+    CodeGen &codegen, llvm::Value *space,
+    const Aggregation::AggregateInfo &agg_info, const codegen::Value &next,
     UpdateableStorage::NullBitmap &null_bitmap) const {
+  /* If the aggregate isn't NULL-able, use the fast path to advance. */
+  if (!null_bitmap.IsNullable(agg_info.storage_index)) {
+    AdvanceValue(codegen, storage_, space, agg_info, next);
+    return;
+  }
+
   /*
-   * This aggregate is NULL-able, we need to check if the update value is
-   * NULL, and whether the current value of the aggregate is NULL.
+   * This aggregate is NULL-able, we need to perform some NULL checking. We need
+   * to handle two scenarios which both consider only when the update/next value
+   * is non-NULL:
+   *  1. If the current aggregate value is NULL, the update value becomes the
+   *     new value of the running aggregate.
+   *  2. If the current aggregate is not NULL, we need to advance it by the next
+   *     value.
    *
-   * There are two cases we handle:
-   * (1). If neither the update value or the current aggregate value are NULL,
-   *      we simple do the regular aggregation without NULL checking.
-   * (2). If the update value is not NULL, but the current aggregate **is**
-   *      NULL, then we just store this update value as if we're creating it
-   *      for the first time.
-   *
-   * If either the update value or the current aggregate are NULL, we have
-   * nothing to do.
+   * If the update value is NULL, we can skip it.
    */
 
   PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
 
-  // Fetch null byte so we can phi-resolve it after all the branches
   llvm::Value *null_byte_snapshot =
       null_bitmap.ByteFor(codegen, agg_info.storage_index);
 
-  lang::If update_not_null(codegen, update.IsNotNull(codegen));
+  lang::If update_not_null(codegen, next.IsNotNull(codegen));
   {
     lang::If agg_is_null(codegen,
                          null_bitmap.IsNull(codegen, agg_info.storage_index));
     {
-      /* Case (2): update is not NULL, but aggregate is NULL */
-      storage_.SetValue(codegen, space, agg_info.storage_index, update,
+      storage_.SetValue(codegen, space, agg_info.storage_index, next,
                         null_bitmap);
     }
     agg_is_null.ElseBlock();
     {
-      /* Case (1): both update and aggregate are not NULL */
-      AdvanceValue(codegen, storage_, space, agg_info, update);
+      // Perform proper merge
+      AdvanceValue(codegen, storage_, space, agg_info, next);
     }
     agg_is_null.EndIf();
-
-    // Merge the null value
     null_bitmap.MergeValues(agg_is_null, null_byte_snapshot);
   }
   update_not_null.EndIf();
-
-  // Merge the null value
   null_bitmap.MergeValues(update_not_null, null_byte_snapshot);
 }
 
@@ -417,35 +414,101 @@ void Aggregation::AdvanceValues(
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
 
   for (const auto &agg_info : aggregate_infos_) {
-    /*
-     * We don't care about averages directly at this point. Their individual
-     * components will get updated appropriately.
-     */
+    /* Skip derivative aggregates. Their values will be finalized later */
     if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
       continue;
     }
 
-    /*
-     * Skip over distinct aggregates for now. These well get merged in through a
-     * separate call to MergeDistinct().
-     */
+    /* Skip distinct aggregates. Their values will be merged in later */
     if (agg_info.distinct) {
       continue;
     }
 
-    // The update value
-    const codegen::Value &update = next_vals[agg_info.source_index];
-
-    // Check nullability
-    if (!null_bitmap.IsNullable(agg_info.storage_index)) {
-      AdvanceValue(codegen, storage_, space, agg_info, update);
-    } else {
-      DoAdvanceNullCheck(codegen, space, agg_info, update, null_bitmap);
-    }
+    // Advance
+    AdvanceSingleValue(codegen, space, agg_info,
+                       next_vals[agg_info.source_index], null_bitmap);
   }
 
   // Write the final contents of the null bitmap
   null_bitmap.WriteBack(codegen);
+}
+
+void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *space,
+                                       uint32_t index,
+                                       const codegen::Value &val) const {
+  PELOTON_ASSERT(index < aggregate_infos_.size());
+
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+
+  for (const auto &agg_info : aggregate_infos_) {
+    /* Skip derivative aggregates. Their values will be finalized later */
+    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
+      continue;
+    }
+
+    /* Skip unrelated aggregates */
+    if (agg_info.source_index != index) {
+      continue;
+    }
+
+    /* Advance this single aggregate */
+    AdvanceSingleValue(codegen, space, agg_info, val, null_bitmap);
+  }
+
+  null_bitmap.WriteBack(codegen);
+}
+
+void Aggregation::MergePartialAggregates(CodeGen &codegen,
+                                         llvm::Value *curr_vals,
+                                         llvm::Value *new_vals) const {
+  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, curr_vals);
+  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, new_vals);
+  for (const auto &agg_info : aggregate_infos_) {
+    /* Skip derivative aggregates. Their values will be finalized later */
+    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
+      continue;
+    }
+
+    /* If the aggregate isn't NULL-able, use the fast path to merge. */
+    if (!curr_null_bitmap.IsNullable(agg_info.storage_index)) {
+      MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
+      continue;
+    }
+
+    /*
+     * The aggregate at this position is NULL-able. If the partial aggregate is
+     * NULL, we needn't do anything. If the partial aggregate is not NULL, but
+     * the current aggregate is NULL, we overwrite the current value with the
+     * partial. If both are non-NULL, we do a proper merge.
+     */
+
+    uint32_t storage_idx = agg_info.storage_index;
+
+    llvm::Value *null_byte_snapshot =
+        curr_null_bitmap.ByteFor(codegen, storage_idx);
+
+    llvm::Value *partial_null = new_null_bitmap.IsNull(codegen, storage_idx);
+    lang::If partial_not_null(codegen, codegen->CreateNot(partial_null));
+    {
+      llvm::Value *current_null = curr_null_bitmap.IsNull(codegen, storage_idx);
+      lang::If curr_is_null(codegen, current_null);
+      {
+        auto partial =
+            storage_.GetValueSkipNull(codegen, new_vals, storage_idx);
+        storage_.SetValue(codegen, curr_vals, storage_idx, partial,
+                          curr_null_bitmap);
+      }
+      curr_is_null.ElseBlock();
+      {
+        // Normal merge
+        MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
+      }
+      curr_is_null.EndIf();
+      curr_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
+    }
+    partial_not_null.EndIf();
+    curr_null_bitmap.MergeValues(partial_not_null, null_byte_snapshot);
+  }
 }
 
 void Aggregation::FinalizeValues(
@@ -508,92 +571,6 @@ void Aggregation::FinalizeValues(
       final_vals.push_back(final_val);
     }
   }
-}
-
-void Aggregation::MergePartialAggregates(CodeGen &codegen,
-                                         llvm::Value *curr_vals,
-                                         llvm::Value *new_vals) const {
-  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, curr_vals);
-  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, new_vals);
-  for (const auto &agg_info : aggregate_infos_) {
-    /*
-     * We don't care about averages directly at this point. Their individual
-     * components will get merged appropriately.
-     */
-    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
-      continue;
-    }
-
-    /*
-     * If neither the current nor the new partial aggregate slot is NULLable,
-     * use the fast path to merge these values together.
-     */
-    if (!curr_null_bitmap.IsNullable(agg_info.storage_index)) {
-      MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
-      continue;
-    }
-
-    /*
-     * Here, both the current aggregate value and the partial aggregate can be
-     * NULL. If the partial aggregate is NULL, we don't need to do anything. If
-     * the partial aggregate is not NULL, but the current aggregate value is, we
-     * overwrite the current value with the partial. If both are non-NULL, we
-     * do a proper merge.
-     */
-
-    uint32_t storage_idx = agg_info.storage_index;
-
-    llvm::Value *null_byte_snapshot =
-        curr_null_bitmap.ByteFor(codegen, storage_idx);
-
-    llvm::Value *partial_null = new_null_bitmap.IsNull(codegen, storage_idx);
-    lang::If partial_not_null(codegen, codegen->CreateNot(partial_null));
-    {
-      llvm::Value *current_null = curr_null_bitmap.IsNull(codegen, storage_idx);
-      lang::If curr_is_null(codegen, current_null);
-      {
-        auto partial =
-            storage_.GetValueSkipNull(codegen, new_vals, storage_idx);
-        storage_.SetValue(codegen, curr_vals, storage_idx, partial,
-                          curr_null_bitmap);
-      }
-      curr_is_null.ElseBlock();
-      {
-        // Normal merge
-        MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
-      }
-      curr_is_null.EndIf();
-
-      curr_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
-    }
-    partial_not_null.EndIf();
-
-    curr_null_bitmap.MergeValues(partial_not_null, null_byte_snapshot);
-  }
-}
-
-void Aggregation::MergeDistinctValue(CodeGen &codegen, llvm::Value *space,
-                                     uint32_t index,
-                                     const codegen::Value &val) const {
-  PELOTON_ASSERT(index < aggregate_infos_.size());
-
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
-
-  for (const auto &agg_info : aggregate_infos_) {
-    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
-      continue;
-    }
-
-    if (agg_info.source_index == index) {
-      if (!null_bitmap.IsNullable(agg_info.storage_index)) {
-        AdvanceValue(codegen, storage_, space, agg_info, val);
-      } else {
-        DoAdvanceNullCheck(codegen, space, agg_info, val, null_bitmap);
-      }
-    }
-  }
-
-  null_bitmap.WriteBack(codegen);
 }
 
 }  // namespace codegen
