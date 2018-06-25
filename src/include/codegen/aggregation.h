@@ -107,8 +107,8 @@ class Aggregation {
    * @param index
    * @param val
    */
-  void MergeDistinct(CodeGen &codegen, llvm::Value *space, uint32_t index,
-                     const codegen::Value &val) const;
+  void MergeDistinctValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
+                          const codegen::Value &val) const;
 
   /**
    * Get the total number of bytes needed to store all aggregate values
@@ -163,14 +163,6 @@ class Aggregation {
 
  private:
   /**
-   *
-   * @param agg_info
-   * @return
-   */
-  codegen::Value InitialDistinctValue(
-      CodeGen &codegen, const Aggregation::AggregateInfo &agg_info) const;
-
-  /**
    * Tries to update the given aggregate with the provided update value, but
    * performs a NULL check to determine what and how to update.
    *
@@ -184,29 +176,6 @@ class Aggregation {
                           const AggregateInfo &agg_info,
                           const codegen::Value &update,
                           UpdateableStorage::NullBitmap &null_bitmap) const;
-
-  /**
-   * Advance the aggregate value assuming the current aggregate value IS NOT
-   * NULL. The delta update value may or may not be NULL.
-   *
-   * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
-   * @param agg_info The aggregate (and information) to update
-   * @param next The delta value we advance the aggregate by
-   */
-  void DoAdvanceValue(CodeGen &codegen, llvm::Value *space,
-                      const AggregateInfo &agg_info,
-                      const codegen::Value &next) const;
-
-  /**
-   *
-   * @param codegen
-   * @param agg_info
-   * @param curr_vals
-   * @param new_vals
-   */
-  void DoMergePartial(CodeGen &codegen, const AggregateInfo &agg_info,
-                      llvm::Value *curr_vals, llvm::Value *new_vals) const;
 
  private:
   // Is this a global aggregation?

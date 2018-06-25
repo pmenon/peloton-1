@@ -262,10 +262,8 @@ class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
 class HashGroupByTranslator::IterateDistinctTable
     : public HashTable::IterateCallback {
  public:
-  IterateDistinctTable(const HashTable &agg_table,
-                                       llvm::Value *ht_ptr,
-                                       const Aggregation &aggregation,
-                                       uint32_t agg_pos)
+  IterateDistinctTable(const HashTable &agg_table, llvm::Value *ht_ptr,
+                       const Aggregation &aggregation, uint32_t agg_pos)
       : agg_table_(agg_table),
         ht_ptr_(ht_ptr),
         aggregation_(aggregation),
@@ -282,7 +280,7 @@ class HashGroupByTranslator::IterateDistinctTable
             distinct_val(_distinct_val) {}
 
       void ProcessEntry(CodeGen &codegen, llvm::Value *value) const override {
-        aggregation.MergeDistinct(codegen, value, agg_pos, distinct_val);
+        aggregation.MergeDistinctValue(codegen, value, agg_pos, distinct_val);
       }
 
      private:
@@ -295,7 +293,7 @@ class HashGroupByTranslator::IterateDistinctTable
     codegen::Value distinct_val = keys.back();
 
     MergeDistinctValue merge_distinct(aggregation_, agg_pos_, distinct_val);
-    agg_table_.ProbeOrInsert(codegen, ht_ptr_, nullptr /* hash value */,
+    agg_table_.ProbeOrInsert(codegen, ht_ptr_, /* hash value */ nullptr,
                              group_key, HashTable::InsertMode::Normal,
                              &merge_distinct, nullptr);
   }
@@ -910,8 +908,8 @@ void HashGroupByTranslator::MergeDistinctAggregates() const {
     const HashTable &hash_table = distinct_agg_info.hash_table;
 
     // Do the merge
-    IterateDistinctTable merge_distinct(
-        hash_table_, agg_ht_ptr, aggregation_, distinct_agg_info.agg_pos);
+    IterateDistinctTable merge_distinct(hash_table_, agg_ht_ptr, aggregation_,
+                                        distinct_agg_info.agg_pos);
     hash_table.Iterate(codegen, distinct_ht_ptr, merge_distinct);
   }
 }
