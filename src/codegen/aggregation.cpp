@@ -79,7 +79,7 @@ void Aggregation::Setup(
          * type appropriately.
          */
         auto value_type = agg_term.expression->ResultType();
-        if (IsGlobal()) {
+        if (is_global) {
           value_type = value_type.AsNullable();
         }
 
@@ -103,7 +103,7 @@ void Aggregation::Setup(
          * distinct flag for them here.
          */
         auto value_type = agg_term.expression->ResultType();
-        if (IsGlobal()) {
+        if (is_global) {
           value_type = value_type.AsNullable();
         }
 
@@ -127,7 +127,7 @@ void Aggregation::Setup(
          */
         type::Type count_type(type::BigInt::Instance(), false);
         type::Type sum_type = agg_term.expression->ResultType();
-        if (IsGlobal()) {
+        if (is_global) {
           sum_type = sum_type.AsNullable();
         }
 
@@ -173,7 +173,7 @@ codegen::Value Aggregation::InitialDistinctValue(
 
 void Aggregation::CreateInitialGlobalValues(CodeGen &codegen,
                                             llvm::Value *space) const {
-  PELOTON_ASSERT(IsGlobal());
+  PELOTON_ASSERT(is_global_);
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
   null_bitmap.InitAllNull(codegen);
   null_bitmap.WriteBack(codegen);
@@ -183,7 +183,7 @@ void Aggregation::CreateInitialValues(
     CodeGen &codegen, llvm::Value *space,
     const std::vector<codegen::Value> &initial_vals) const {
   // Global aggregations should be calling CreateInitialGlobalValues(...)
-  PELOTON_ASSERT(!IsGlobal());
+  PELOTON_ASSERT(!is_global_);
 
   // The null bitmap tracker
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);

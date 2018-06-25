@@ -163,13 +163,6 @@ class Aggregation {
 
  private:
   /**
-   * Is this aggregation configured to be global?
-   *
-   * @return True if global, false otherwise.
-   */
-  bool IsGlobal() const { return is_global_; }
-
-  /**
    *
    * @param agg_info
    * @return
