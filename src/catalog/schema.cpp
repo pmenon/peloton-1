@@ -337,7 +337,7 @@ bool Schema::operator==(const Schema &other) const {
     return false;
   }
 
-  if (columns != other.columns) {
+  if (columns_ != other.columns_) {
     return false;
   }
 
