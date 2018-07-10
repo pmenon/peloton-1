@@ -23,61 +23,128 @@ namespace lang {
 class If;
 }  // namespace lang
 
-//===----------------------------------------------------------------------===//
-// A storage area where slots can be updated.
-//===----------------------------------------------------------------------===//
+/**
+ * An interface to a contiguous storage areas where individual elements can be
+ * updated.
+ */
 class UpdateableStorage {
  public:
-  /// Constructor
+  /**
+   * Constructor
+   *
+   * @param name The (optional) name given to the storage area
+   */
   UpdateableStorage(std::string name = "Buf")
       : name_(std::move(name)),
         storage_size_(0),
         storage_type_(nullptr),
+        null_bitmap_pos_(0),
         null_bitmap_type_(nullptr) {}
 
-  // Add the given type to the storage format. We return the index that this
-  // value can be found it (i.e., the index to pass into Get() to get the value)
+  /**
+   * Add the given type to the storage format, returning the index that this
+   * value can be found at (i.e., the index to pass into Get() to get the value)
+   *
+   * @param type The type to add to the storage schema
+   * @return The ID used to access the element in storage
+   */
   uint32_t AddType(const type::Type &type);
 
-  // Construct the final LLVM type given all the types that'll be stored
+  /**
+   * Construct the final LLVM type given all the types that'll be stored.
+   *
+   * @param codegen The codegen instance
+   * @return The LLVM type for this storage
+   */
   llvm::Type *Finalize(CodeGen &codegen);
 
-  // Forward declare - convenience class to handle NULL bitmaps.
+  /// Forward declare - convenience class to handle NULL bitmaps.
   class NullBitmap;
 
-  // Get the value at a specific index into the storage area, ignoring whether
-  // the value is NULL or not
+  /**
+   * Get the value at a specific index into the storage area, ignoring whether
+   * the value is NULL or not.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to the storage space
+   * @param index The index of the element to read
+   * @return The current value at the given index
+   */
   codegen::Value GetValueSkipNull(CodeGen &codegen, llvm::Value *space,
                                   uint32_t index) const;
 
-  // Like GetValueIgnoreNull(), but this also reads the NULL bitmap to determine
-  // if the value is null.
+  /**
+   * Like GetValueIgnoreNull(), but this also reads the NULL bitmap to determine
+   * if the value is null.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to the storage space
+   * @param index The index of the element to read
+   * @param null_bitmap The NULL bitmap for the given storage instance
+   * @return The current value at the given index
+   */
   codegen::Value GetValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
                           NullBitmap &null_bitmap) const;
 
-  // Set the given value at the specific index in the storage area, ignoring to
-  // update the bitmap
+  /**
+   * Set the given value at the specific index in the storage area and omit an
+   * update the NULL bitmap.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to the storage space
+   * @param index The index of the element to write
+   * @param value The value to write at the given index
+   */
   void SetValueSkipNull(CodeGen &codegen, llvm::Value *space, uint32_t index,
                         const codegen::Value &value) const;
 
-  // Like SetValueIgnoreNull(), but this also updates the NULL bitmap
+  /**
+   * Like SetValueIgnoreNull(), but this also updates the NULL bitmap based on
+   * whether the written value is NULL. The NULL bitmap (and NULL check) are
+   * elided if we know the type cannot be NULL.
+   *
+   * @param codegen The codegen instance
+   * @param space A pointer to the storage space
+   * @param index The index of the element to write
+   * @param value The value to write
+   * @param null_bitmap The NULL bitmap for the given storage instasnce
+   */
   void SetValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
                 const codegen::Value &value, NullBitmap &null_bitmap) const;
 
-  // Return the format of the storage area
+  /**
+   * Return the format of the storage area
+   * @return The LLVM type of the storage type
+   */
   llvm::Type *GetStorageType() const { return storage_type_; }
+
+  /**
+   * Return the type of the NULL bitmap if any.
+   *
+   * @return The LLVM type of the NULL bitmap for this storage
+   */
   llvm::Type *GetNullBitmapType() const { return null_bitmap_type_; }
 
-  // Return the total bytes required by this storage format
+  /**
+   * Return the total bytes required by this storage format.
+   *
+   * @return The total number of bytes this storage space occupies
+   */
   uint32_t GetStorageSize() const { return storage_size_; }
 
-  // Return the number of elements this format is configured to handle
+  /**
+   * Return the number of elements this format is configured to handle.
+   *
+   * @return The number of elements in the storage space
+   */
   uint32_t GetNumElements() const {
     return static_cast<uint32_t>(schema_.size());
   }
 
  public:
-  // Convenience class to handle NULL bitmaps.
+  /**
+   * Convenience class to handle NULL bitmaps.
+   */
   class NullBitmap {
    public:
     NullBitmap(CodeGen &codegen, const UpdateableStorage &storage,
