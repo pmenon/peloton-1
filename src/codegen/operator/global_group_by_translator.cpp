@@ -130,8 +130,8 @@ GlobalGroupByTranslator::GlobalGroupByTranslator(
   aggregation_.Setup(codegen, aggregates, true);
 
   // Create the materialization buffer where we aggregate things
-  auto *aggregate_storage = aggregation_.GetAggregateStorage().GetStorageType();
-  mat_buffer_id_ = query_state.RegisterState("aggBuf", aggregate_storage);
+  llvm::Type *agg_storage_type = aggregation_.GetAggregateStorageType();
+  mat_buffer_id_ = query_state.RegisterState("aggBuf", agg_storage_type);
 }
 
 void GlobalGroupByTranslator::InitializeQueryState() {

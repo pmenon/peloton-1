@@ -120,11 +120,13 @@ class Aggregation {
   }
 
   /**
-   * Get the storage format of the aggregates this class is configured to handle
+   * Get the underlying LLVM format of this aggregate storage
    *
-   * @return
+   * @return The LLVM type of this aggregate storage
    */
-  const UpdateableStorage &GetAggregateStorage() const { return storage_; }
+  llvm::Type *GetAggregateStorageType() const {
+    return storage_.GetStorageType();
+  }
 
   /**
    * This structure maps higher-level aggregates to their physical storage, and
@@ -155,10 +157,11 @@ class Aggregation {
     // Is this aggregate purely internal?
     bool internal;
 
+    // Is this aggregate distinct?
     bool distinct;
 
     AggregateInfo(ExpressionType aggregate_type, uint32_t source_index,
-                  uint32_t storage_index, bool _internal, bool _distinct);
+                  uint32_t storage_index, bool internal, bool distinct);
   };
 
  private:
