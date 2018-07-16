@@ -221,15 +221,16 @@ type::Type Aggregation::SumType(const type::Type &input_type) {
       return input_type;
     }
     default: {
-      throw Exception(StringUtil::Format("Type [%s] cannot be in SUM() agg",
-                                         TypeIdToString(input_type.type_id)));
+      throw Exception(
+          StringUtil::Format("Type [%s] cannot be in SUM() agg",
+                             TypeIdToString(input_type.type_id).c_str()));
     }
   }
 }
 
 type::Type Aggregation::DividingAggType(const type::Type &numerator_type,
                                         const type::Type &denominator_type) {
-  bool result_nullable = numerator_type.nullable || denominator_type.nullable;
+  bool result_nullable = (numerator_type.nullable || denominator_type.nullable);
   return type::Type(type::Decimal::Instance(), result_nullable);
 }
 
