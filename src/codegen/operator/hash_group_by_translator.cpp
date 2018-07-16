@@ -239,6 +239,9 @@ void HashGroupByTranslator::ProduceResults::ProcessEntries(
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
+/*
+ * This class is used to merge partial aggregates stored in two different tables
+ */
 class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
  public:
   explicit ParallelMerge(const Aggregation &aggregation)
@@ -259,6 +262,12 @@ class HashGroupByTranslator::ParallelMerge : public HashTable::MergeCallback {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
+/**
+ * This class is used to iterate over hash table storing data used for distinct
+ * aggregations. The contents of the table are all observed distinct values for
+ * the input expression (i.e., AVG(distinct a) will have a hash table storing
+ * all distinct values of column 'a').
+ */
 class HashGroupByTranslator::IterateDistinctTable
     : public HashTable::IterateCallback {
  public:
@@ -535,7 +544,8 @@ void HashGroupByTranslator::Produce() const {
         HashTableProxy::GetType(codegen)->getPointerTo()};
 
     auto parallel_producer = [this, &producer](
-        ConsumerContext &ctx, std::vector<llvm::Value *> args) {
+                                 ConsumerContext &ctx,
+                                 std::vector<llvm::Value *> args) {
       PELOTON_ASSERT(args.size() == 1);
       producer(ctx, args[0]);
     };
@@ -644,7 +654,7 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
   CollectGroupingKey(row, group_key);
 
   /*
-   * Next, derived and collect values to update the aggregates in the main
+   * Next, derive and collect values to update the aggregates in the main
    * aggregate hash table.
    */
 
@@ -698,10 +708,12 @@ void HashGroupByTranslator::Consume(ConsumerContext &ctx,
    * Update the main aggregation hash table!
    */
 
+  llvm::Value *hash = nullptr;
+
   ConsumerProbe probe(aggregation_, vals);
   ConsumerInsert insert(aggregation_, vals);
-  hash_table_.ProbeOrInsert(codegen, table_ptr, nullptr /* hash value */,
-                            group_key, mode, &probe, &insert);
+  hash_table_.ProbeOrInsert(codegen, table_ptr, hash, group_key, mode, &probe,
+                            &insert);
 
   /*
    * Now, update all hash tables for distinct aggregates, if any
