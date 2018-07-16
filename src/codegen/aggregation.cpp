@@ -15,8 +15,8 @@
 #include "codegen/lang/if.h"
 #include "codegen/type/bigint_type.h"
 #include "codegen/type/boolean_type.h"
-#include "codegen/type/integer_type.h"
 #include "codegen/type/decimal_type.h"
+#include "codegen/type/integer_type.h"
 
 namespace peloton {
 namespace codegen {
@@ -30,23 +30,55 @@ namespace codegen {
 
 namespace {
 
-/**
- *
- * @param codegen
- * @param agg_info
- * @return
- */
-codegen::Value InitialDistinctValue(
-    CodeGen &codegen, const Aggregation::AggregateInfo &agg_info) {
-#if 0
-  switch (agg_info.aggregate_type) {
-    case ExpressionType::AGGREGATE_COUNT: return codegen
+codegen::Value InitialAggValue(CodeGen &codegen,
+                               const Aggregation::AggregateInfo &agg_info,
+                               const codegen::Value *initial) {
+  switch (agg_info.agg_type) {
+    case ExpressionType::AGGREGATE_COUNT: {
+      if (initial == nullptr) {
+        return codegen::Value(type::BigInt::Instance(), codegen.Const64(0));
+      }
+
+      const type::Type count_type(type::BigInt::Instance(), false);
+
+      if (initial->IsNullable()) {
+        llvm::Value *not_null = initial->IsNotNull(codegen);
+        return codegen::Value(
+            count_type, codegen->CreateZExt(not_null, codegen.Int64Type()));
+      } else {
+        return codegen::Value(count_type, codegen.Const64(1));
+      }
+    }
+    case ExpressionType::AGGREGATE_COUNT_STAR: {
+      return codegen::Value(type::BigInt::Instance(), codegen.Const64(1));
+    }
+    case ExpressionType::AGGREGATE_MAX:
+    case ExpressionType::AGGREGATE_MIN: {
+      PELOTON_ASSERT(initial != nullptr);
+      return *initial;
+    }
+    case ExpressionType::AGGREGATE_SUM: {
+      if (initial != nullptr) {
+        if (initial->GetType() == agg_info.type) {
+          return *initial;
+        } else {
+          return initial->CastTo(codegen, agg_info.type);
+        }
+      }
+
+      if (agg_info.type.type_id == peloton::type::TypeId::DECIMAL) {
+        return codegen::Value(type::Decimal::Instance(),
+                              codegen.ConstDouble(0.0));
+      } else {
+        return codegen::Value(type::BigInt::Instance(), codegen.Const64(0));
+      }
+    }
+    default: {
+      throw Exception(StringUtil::Format(
+          "Unexpected aggregate type '%s' when finding base aggregate value",
+          ExpressionTypeToString(agg_info.agg_type).c_str()));
+    }
   }
-#endif
-  // TODO: Implement me
-  (void)agg_info;
-  type::Type type(type::Integer::Instance(), /* nullable */ false);
-  return codegen::Value(type, codegen.Const16(0));
 }
 
 /**
@@ -54,25 +86,28 @@ codegen::Value InitialDistinctValue(
  * NULL. The delta update value may or may not be NULL.
  *
  * @param codegen The codegen instance
- * @param storage
+ * @param storage The storage format of the aggregates
  * @param space A pointer to where all aggregates are contiguously stored
  * @param agg_info The aggregate (and information) to update
  * @param next The delta value we advance the aggregate by
  */
-void AdvanceValue(CodeGen &codegen, const UpdateableStorage &storage,
-                  llvm::Value *space,
-                  const Aggregation::AggregateInfo &agg_info,
-                  const codegen::Value &update) {
-  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
+void AdvanceAgg(CodeGen &codegen, const UpdateableStorage &storage,
+                llvm::Value *space, const Aggregation::AggregateInfo &agg_info,
+                const codegen::Value &update) {
+  PELOTON_ASSERT(agg_info.storage_idx < std::numeric_limits<uint32_t>::max());
 
-  const uint32_t storage_idx = agg_info.storage_index;
+  const uint32_t storage_idx = agg_info.storage_idx;
 
-  auto curr = storage.GetValueSkipNull(codegen, space, storage_idx);
+  codegen::Value curr = storage.GetValueSkipNull(codegen, space, storage_idx);
 
   codegen::Value next;
-  switch (agg_info.aggregate_type) {
-    case ExpressionType::AGGREGATE_COUNT_STAR:
+  switch (agg_info.agg_type) {
     case ExpressionType::AGGREGATE_SUM: {
+      auto target_type = Aggregation::SumType(update.GetType());
+      next = curr.Add(codegen, update.CastTo(codegen, target_type));
+      break;
+    }
+    case ExpressionType::AGGREGATE_COUNT_STAR: {
       next = curr.Add(codegen, update);
       break;
     }
@@ -103,7 +138,7 @@ void AdvanceValue(CodeGen &codegen, const UpdateableStorage &storage,
     default: {
       throw Exception(StringUtil::Format(
           "Unexpected aggregate type '%s' when advancing aggregator",
-          ExpressionTypeToString(agg_info.aggregate_type).c_str()));
+          ExpressionTypeToString(agg_info.agg_type).c_str()));
     }
   }
 
@@ -111,26 +146,28 @@ void AdvanceValue(CodeGen &codegen, const UpdateableStorage &storage,
 }
 
 /**
+ * Merge the contents of two partial aggregates, storing the result into the
+ * destination aggregate space.
  *
- * @param codegen
- * @param storage
- * @param agg_info
- * @param curr_vals
- * @param new_vals
+ * @param codegen The codegen instance
+ * @param storage The storage format of the aggregates
+ * @param agg_info Information about the current aggregate we're merging
+ * @param dest_aggs The aggregate space where we write the results of the merge
+ * @param src_aggs Partial aggregates that we merge
  */
-void MergePartial(CodeGen &codegen, const UpdateableStorage &storage,
-                  const Aggregation::AggregateInfo &agg_info,
-                  llvm::Value *curr_vals, llvm::Value *new_vals) {
-  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
+void MergePartialAgg(CodeGen &codegen, const UpdateableStorage &storage,
+                     const Aggregation::AggregateInfo &agg_info,
+                     llvm::Value *dest_aggs, llvm::Value *src_aggs) {
+  PELOTON_ASSERT(agg_info.storage_idx < std::numeric_limits<uint32_t>::max());
 
-  const uint32_t storage_idx = agg_info.storage_index;
+  const uint32_t storage_idx = agg_info.storage_idx;
 
-  const auto curr = storage.GetValueSkipNull(codegen, curr_vals, storage_idx);
+  const auto curr = storage.GetValueSkipNull(codegen, dest_aggs, storage_idx);
 
-  const auto partial = storage.GetValueSkipNull(codegen, new_vals, storage_idx);
+  const auto partial = storage.GetValueSkipNull(codegen, src_aggs, storage_idx);
 
   codegen::Value next;
-  switch (agg_info.aggregate_type) {
+  switch (agg_info.agg_type) {
     case ExpressionType::AGGREGATE_COUNT:
     case ExpressionType::AGGREGATE_COUNT_STAR:
     case ExpressionType::AGGREGATE_SUM: {
@@ -148,30 +185,14 @@ void MergePartial(CodeGen &codegen, const UpdateableStorage &storage,
     default: {
       throw Exception(StringUtil::Format(
           "Unexpected aggregate type '%s' when merging partial aggregator",
-          ExpressionTypeToString(agg_info.aggregate_type).c_str()));
+          ExpressionTypeToString(agg_info.agg_type).c_str()));
     }
   }
 
-  storage.SetValueSkipNull(codegen, curr_vals, storage_idx, next);
+  storage.SetValueSkipNull(codegen, dest_aggs, storage_idx, next);
 }
 
 }  // namespace
-
-////////////////////////////////////////////////////////////////////////////////
-///
-/// Aggregate information
-///
-////////////////////////////////////////////////////////////////////////////////
-
-Aggregation::AggregateInfo::AggregateInfo(const ExpressionType _aggregate_type,
-                                          const uint32_t _source_index,
-                                          const uint32_t _storage_index,
-                                          bool _internal, bool _distinct)
-    : aggregate_type(_aggregate_type),
-      source_index(_source_index),
-      storage_index(_storage_index),
-      internal(_internal),
-      distinct(_distinct) {}
 
 ////////////////////////////////////////////////////////////////////////////////
 ///
@@ -180,6 +201,37 @@ Aggregation::AggregateInfo::AggregateInfo(const ExpressionType _aggregate_type,
 ////////////////////////////////////////////////////////////////////////////////
 
 Aggregation::Aggregation() : storage_("AggBuf") {}
+
+type::Type Aggregation::SumType(const type::Type &input_type) {
+  /*
+   * We use BIGINT for TINYINT, SMALLINT, INTEGER and BIGINT. We use DECIMAL
+   * for all others.
+   *
+   * TODO: We need to be more precise on what specifics of the DECIMAL we need,
+   * such as precision etc.
+   */
+  switch (input_type.type_id) {
+    case peloton::type::TypeId::TINYINT:
+    case peloton::type::TypeId::SMALLINT:
+    case peloton::type::TypeId::INTEGER:
+    case peloton::type::TypeId::BIGINT: {
+      return type::Type(type::BigInt::Instance(), input_type.nullable);
+    }
+    case peloton::type::TypeId::DECIMAL: {
+      return input_type;
+    }
+    default: {
+      throw Exception(StringUtil::Format("Type [%s] cannot be in SUM() agg",
+                                         TypeIdToString(input_type.type_id)));
+    }
+  }
+}
+
+type::Type Aggregation::DividingAggType(const type::Type &numerator_type,
+                                        const type::Type &denominator_type) {
+  bool result_nullable = numerator_type.nullable || denominator_type.nullable;
+  return type::Type(type::Decimal::Instance(), result_nullable);
+}
 
 void Aggregation::Setup(
     CodeGen &codegen,
@@ -195,16 +247,12 @@ void Aggregation::Setup(
         /*
          * COUNT(...)'s can never be NULL and their type is always BIGINT.
          */
-        const type::Type count_type(type::BigInt::Instance(),
-                                    /* nullable */ false);
+        const type::Type count_type(type::BigInt::Instance(), false);
         uint32_t storage_pos = storage_.AddType(count_type);
 
-        bool distinct = agg_term.distinct &&
-                        agg_term.agg_type == ExpressionType::AGGREGATE_COUNT;
-
-        aggregate_infos_.emplace_back(agg_term.agg_type, source_idx,
-                                      storage_pos, /* internal */ false,
-                                      distinct);
+        aggregate_infos_.emplace_back(
+            agg_term.agg_type, count_type, count_type, source_idx, storage_pos,
+            /* internal */ false, agg_term.distinct, /* derived */ false);
         break;
       }
       case ExpressionType::AGGREGATE_SUM: {
@@ -214,16 +262,17 @@ void Aggregation::Setup(
          * This can happen, for example, if there are no input rows. Modify the
          * type appropriately.
          */
-        auto value_type = agg_term.expression->ResultType();
+        type::Type input_type = agg_term.expression->ResultType();
+        type::Type sum_type = SumType(agg_term.expression->ResultType());
         if (is_global) {
-          value_type = value_type.AsNullable();
+          sum_type = sum_type.AsNullable();
         }
 
-        uint32_t storage_pos = storage_.AddType(value_type);
+        uint32_t storage_pos = storage_.AddType(sum_type);
 
-        aggregate_infos_.emplace_back(agg_term.agg_type, source_idx,
-                                      storage_pos, /* internal */ false,
-                                      agg_term.distinct);
+        aggregate_infos_.emplace_back(
+            agg_term.agg_type, sum_type, input_type, source_idx, storage_pos,
+            /* internal */ false, agg_term.distinct, /* derived */ false);
         break;
       }
       case ExpressionType::AGGREGATE_MIN:
@@ -238,16 +287,18 @@ void Aggregation::Setup(
          * handling over their non-distinct versions. Hence, we don't set the
          * distinct flag for them here.
          */
-        auto value_type = agg_term.expression->ResultType();
+        type::Type value_type = agg_term.expression->ResultType();
         if (is_global) {
           value_type = value_type.AsNullable();
         }
 
         uint32_t storage_pos = storage_.AddType(value_type);
 
-        aggregate_infos_.emplace_back(agg_term.agg_type, source_idx,
-                                      storage_pos, /* internal */ false,
-                                      /* distinct */ false);
+        aggregate_infos_.emplace_back(agg_term.agg_type, value_type, value_type,
+                                      source_idx, storage_pos,
+                                      /* internal */ false,
+                                      /* distinct */ false,
+                                      /* derived */ false);
         break;
       }
       case ExpressionType::AGGREGATE_AVG: {
@@ -262,24 +313,31 @@ void Aggregation::Setup(
          * type appropriately.
          */
         type::Type count_type(type::BigInt::Instance(), false);
-        type::Type sum_type = agg_term.expression->ResultType();
+        type::Type input_type = agg_term.expression->ResultType();
+        type::Type sum_type = SumType(input_type);
         if (is_global) {
           sum_type = sum_type.AsNullable();
         }
+        type::Type avg_type = DividingAggType(sum_type, count_type);
 
         uint32_t sum_storage_pos = storage_.AddType(sum_type);
         uint32_t count_storage_pos = storage_.AddType(count_type);
 
         /* Add the SUM(), COUNT() and (logical) AVG() aggregates */
-        aggregate_infos_.emplace_back(ExpressionType::AGGREGATE_SUM, source_idx,
-                                      sum_storage_pos, /* internal */ true,
-                                      agg_term.distinct);
+        aggregate_infos_.emplace_back(ExpressionType::AGGREGATE_SUM, sum_type,
+                                      input_type, source_idx, sum_storage_pos,
+                                      /* internal */ true, agg_term.distinct,
+                                      /* derived */ false);
         aggregate_infos_.emplace_back(ExpressionType::AGGREGATE_COUNT,
-                                      source_idx, count_storage_pos,
-                                      /* internal */ true, agg_term.distinct);
-        aggregate_infos_.emplace_back(ExpressionType::AGGREGATE_AVG, source_idx,
+                                      count_type, count_type, source_idx,
+                                      count_storage_pos,
+                                      /* internal */ true, agg_term.distinct,
+                                      /* derived */ false);
+        aggregate_infos_.emplace_back(ExpressionType::AGGREGATE_AVG, avg_type,
+                                      avg_type, source_idx,
                                       std::numeric_limits<uint32_t>::max(),
-                                      /* internal */ false, agg_term.distinct);
+                                      /* internal */ false, agg_term.distinct,
+                                      /* derived */ true);
         break;
       }
       default: {
@@ -295,84 +353,56 @@ void Aggregation::Setup(
 }
 
 void Aggregation::CreateInitialGlobalValues(CodeGen &codegen,
-                                            llvm::Value *space) const {
+                                            llvm::Value *aggs) const {
   PELOTON_ASSERT(is_global_);
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
   null_bitmap.InitAllNull(codegen);
   null_bitmap.WriteBack(codegen);
 }
 
 void Aggregation::CreateInitialValues(
-    CodeGen &codegen, llvm::Value *space,
+    CodeGen &codegen, llvm::Value *aggs,
     const std::vector<codegen::Value> &initial_vals) const {
   PELOTON_ASSERT(!is_global_);
 
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
   null_bitmap.InitAllNull(codegen);
 
   for (const auto &agg_info : aggregate_infos_) {
-    auto initial = agg_info.distinct ? InitialDistinctValue(codegen, agg_info)
-                                     : initial_vals[agg_info.source_index];
-
-    switch (agg_info.aggregate_type) {
-      case ExpressionType::AGGREGATE_SUM:
-      case ExpressionType::AGGREGATE_MIN:
-      case ExpressionType::AGGREGATE_MAX: {
-        // For the above aggregations, the initial value is the attribute value
-        storage_.SetValue(codegen, space, agg_info.storage_index, initial,
-                          null_bitmap);
-        break;
-      }
-      case ExpressionType::AGGREGATE_COUNT: {
-        llvm::Value *raw_initial = nullptr;
-        if (initial.IsNullable()) {
-          llvm::Value *not_null = initial.IsNotNull(codegen);
-          raw_initial = codegen->CreateZExt(not_null, codegen.Int64Type());
-        } else {
-          raw_initial = codegen.Const64(1);
-        }
-
-        const type::Type count_type(type::BigInt::Instance(), false);
-        codegen::Value initial_val(count_type, raw_initial);
-        storage_.SetValueSkipNull(codegen, space, agg_info.storage_index,
-                                  initial_val);
-        break;
-      }
-      case ExpressionType::AGGREGATE_COUNT_STAR: {
-        // Counts can never be NULL, so skip handling it
-        storage_.SetValueSkipNull(codegen, space, agg_info.storage_index,
-                                  initial);
-        break;
-      }
-      case ExpressionType::AGGREGATE_AVG: {
-        // Nothing to do here
-        break;
-      }
-      default: {
-        throw Exception(StringUtil::Format(
-            "Unexpected aggregate type '%s' when creating initial values",
-            ExpressionTypeToString(agg_info.aggregate_type).c_str()));
-      }
+    // Skip derivative aggregates. Their component values are initialized later.
+    if (agg_info.derived) {
+      continue;
     }
+
+    // Compute the initial value of the aggregate
+    auto initial = InitialAggValue(
+        codegen, agg_info,
+        agg_info.distinct ? nullptr : &initial_vals[agg_info.source_idx]);
+
+    // Write it out
+    storage_.SetValue(codegen, aggs, agg_info.storage_idx, initial,
+                      null_bitmap);
   }
 
   null_bitmap.WriteBack(codegen);
 }
 
-void Aggregation::AdvanceSingleValue(
+void Aggregation::AdvanceValue(
     CodeGen &codegen, llvm::Value *space,
     const Aggregation::AggregateInfo &agg_info, const codegen::Value &next,
     UpdateableStorage::NullBitmap &null_bitmap) const {
-  /* If the aggregate isn't NULL-able, use the fast path to advance. */
-  if (!null_bitmap.IsNullable(agg_info.storage_index)) {
-    AdvanceValue(codegen, storage_, space, agg_info, next);
+  /*
+   * If the aggregate isn't NULL-able, use the fast path to advance.
+   */
+  if (!null_bitmap.IsNullable(agg_info.storage_idx)) {
+    AdvanceAgg(codegen, storage_, space, agg_info, next);
     return;
   }
 
   /*
    * This aggregate is NULL-able, we need to perform some NULL checking. We need
-   * to handle two scenarios which both consider only when the update/next value
+   * to handle two scenarios which both consider only when the update value
    * is non-NULL:
    *  1. If the current aggregate value is NULL, the update value becomes the
    *     new value of the running aggregate.
@@ -382,96 +412,102 @@ void Aggregation::AdvanceSingleValue(
    * If the update value is NULL, we can skip it.
    */
 
-  PELOTON_ASSERT(agg_info.storage_index < std::numeric_limits<uint32_t>::max());
+  PELOTON_ASSERT(agg_info.storage_idx < std::numeric_limits<uint32_t>::max());
 
-  llvm::Value *null_byte_snapshot =
-      null_bitmap.ByteFor(codegen, agg_info.storage_index);
+  uint32_t storage_idx = agg_info.storage_idx;
+
+  llvm::Value *null_byte_snapshot = null_bitmap.ByteFor(codegen, storage_idx);
 
   lang::If update_not_null(codegen, next.IsNotNull(codegen));
   {
-    lang::If agg_is_null(codegen,
-                         null_bitmap.IsNull(codegen, agg_info.storage_index));
+    lang::If agg_is_null(codegen, null_bitmap.IsNull(codegen, storage_idx));
     {
-      storage_.SetValue(codegen, space, agg_info.storage_index, next,
-                        null_bitmap);
+      // Set initial
+      codegen::Value initial = InitialAggValue(codegen, agg_info, &next);
+      storage_.SetValue(codegen, space, storage_idx, initial, null_bitmap);
     }
     agg_is_null.ElseBlock();
     {
       // Perform proper merge
-      AdvanceValue(codegen, storage_, space, agg_info, next);
+      AdvanceAgg(codegen, storage_, space, agg_info, next);
     }
     agg_is_null.EndIf();
+
+    // Update NULL bitmap
     null_bitmap.MergeValues(agg_is_null, null_byte_snapshot);
   }
   update_not_null.EndIf();
+
+  // Finalize value of NULL in bitmap
   null_bitmap.MergeValues(update_not_null, null_byte_snapshot);
 }
 
 void Aggregation::AdvanceValues(
-    CodeGen &codegen, llvm::Value *space,
+    CodeGen &codegen, llvm::Value *aggs,
     const std::vector<codegen::Value> &next_vals) const {
   // The null bitmap tracker
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
   for (const auto &agg_info : aggregate_infos_) {
-    /* Skip derivative aggregates. Their values will be finalized later */
-    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
+    // Skip derivative aggregates. Their values will be finalized later.
+    if (agg_info.derived) {
       continue;
     }
 
-    /* Skip distinct aggregates. Their values will be merged in later */
+    // Skip distinct aggregates. Their values will be merged in later.
     if (agg_info.distinct) {
       continue;
     }
 
-    // Advance
-    AdvanceSingleValue(codegen, space, agg_info,
-                       next_vals[agg_info.source_index], null_bitmap);
+    // Advance the current aggregate
+    AdvanceValue(codegen, aggs, agg_info, next_vals[agg_info.source_idx],
+                 null_bitmap);
   }
 
   // Write the final contents of the null bitmap
   null_bitmap.WriteBack(codegen);
 }
 
-void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *space,
+void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
                                        uint32_t index,
                                        const codegen::Value &val) const {
   PELOTON_ASSERT(index < aggregate_infos_.size());
 
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
   for (const auto &agg_info : aggregate_infos_) {
-    /* Skip derivative aggregates. Their values will be finalized later */
-    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
+    // Skip derivative aggregates. Their values will be finalized later.
+    if (agg_info.derived) {
       continue;
     }
 
-    /* Skip unrelated aggregates */
-    if (agg_info.source_index != index) {
+    // Skip unrelated aggregates
+    if (agg_info.source_idx != index) {
       continue;
     }
 
-    /* Advance this single aggregate */
-    AdvanceSingleValue(codegen, space, agg_info, val, null_bitmap);
+    // Advance the current aggregate
+    AdvanceValue(codegen, aggs, agg_info, val, null_bitmap);
   }
 
   null_bitmap.WriteBack(codegen);
 }
 
 void Aggregation::MergePartialAggregates(CodeGen &codegen,
-                                         llvm::Value *curr_vals,
-                                         llvm::Value *new_vals) const {
-  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, curr_vals);
-  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, new_vals);
+                                         llvm::Value *dest_aggs,
+                                         llvm::Value *src_aggs) const {
+  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, dest_aggs);
+  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, src_aggs);
+
   for (const auto &agg_info : aggregate_infos_) {
-    /* Skip derivative aggregates. Their values will be finalized later */
-    if (agg_info.aggregate_type == ExpressionType::AGGREGATE_AVG) {
+    // Skip derivative aggregates. Their values will be finalized later.
+    if (agg_info.derived) {
       continue;
     }
 
-    /* If the aggregate isn't NULL-able, use the fast path to merge. */
-    if (!curr_null_bitmap.IsNullable(agg_info.storage_index)) {
-      MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
+    // If the aggregate isn't NULL-able, use the fast path to merge
+    if (!curr_null_bitmap.IsNullable(agg_info.storage_idx)) {
+      MergePartialAgg(codegen, storage_, agg_info, dest_aggs, src_aggs);
       continue;
     }
 
@@ -482,7 +518,7 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
      * partial. If both are non-NULL, we do a proper merge.
      */
 
-    uint32_t storage_idx = agg_info.storage_index;
+    uint32_t storage_idx = agg_info.storage_idx;
 
     llvm::Value *null_byte_snapshot =
         curr_null_bitmap.ByteFor(codegen, storage_idx);
@@ -494,19 +530,23 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
       lang::If curr_is_null(codegen, current_null);
       {
         auto partial =
-            storage_.GetValueSkipNull(codegen, new_vals, storage_idx);
-        storage_.SetValue(codegen, curr_vals, storage_idx, partial,
+            storage_.GetValueSkipNull(codegen, src_aggs, storage_idx);
+        storage_.SetValue(codegen, dest_aggs, storage_idx, partial,
                           curr_null_bitmap);
       }
       curr_is_null.ElseBlock();
       {
         // Normal merge
-        MergePartial(codegen, storage_, agg_info, curr_vals, new_vals);
+        MergePartialAgg(codegen, storage_, agg_info, dest_aggs, src_aggs);
       }
       curr_is_null.EndIf();
+
+      // Merge NULL value
       curr_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
     }
     partial_not_null.EndIf();
+
+    // Finalize value of NULL in bitmap
     curr_null_bitmap.MergeValues(partial_not_null, null_byte_snapshot);
   }
 }
@@ -521,38 +561,44 @@ void Aggregation::FinalizeValues(
   for (const auto &agg_info : aggregate_infos_) {
     codegen::Value final_val;
 
-    ExpressionType agg_type = agg_info.aggregate_type;
+    const ExpressionType agg_type = agg_info.agg_type;
     switch (agg_type) {
       case ExpressionType::AGGREGATE_COUNT:
       case ExpressionType::AGGREGATE_COUNT_STAR: {
         // Neither COUNT(...) or COUNT(*) can ever return NULL, so no NULL-check
         final_val =
-            storage_.GetValueSkipNull(codegen, space, agg_info.storage_index);
+            storage_.GetValueSkipNull(codegen, space, agg_info.storage_idx);
         break;
       }
-      case ExpressionType::AGGREGATE_SUM:
+      case ExpressionType::AGGREGATE_SUM: {
+        final_val = storage_.GetValue(codegen, space, agg_info.storage_idx,
+                                      null_bitmap);
+        if (agg_info.type != agg_info.output_type) {
+          final_val = final_val.CastTo(codegen, agg_info.output_type);
+        }
+        break;
+      }
       case ExpressionType::AGGREGATE_MIN:
       case ExpressionType::AGGREGATE_MAX: {
-        final_val = storage_.GetValue(codegen, space, agg_info.storage_index,
+        final_val = storage_.GetValue(codegen, space, agg_info.storage_idx,
                                       null_bitmap);
         break;
       }
       case ExpressionType::AGGREGATE_AVG: {
         // Collect the final values of the SUM and the COUNT components
         codegen::Value sum = all_vals[std::make_pair(
-            agg_info.source_index, ExpressionType::AGGREGATE_SUM)];
+            agg_info.source_idx, ExpressionType::AGGREGATE_SUM)];
 
         codegen::Value count = all_vals[std::make_pair(
-            agg_info.source_index, ExpressionType::AGGREGATE_COUNT)];
+            agg_info.source_idx, ExpressionType::AGGREGATE_COUNT)];
 
         // Cast the values to DECIMAL
-        codegen::Value sum_casted =
-            sum.CastTo(codegen, type::Decimal::Instance());
-        codegen::Value count_casted =
-            count.CastTo(codegen, type::Decimal::Instance());
+        const type::Type &decimal = agg_info.output_type;
+        sum = sum.CastTo(codegen, decimal);
+        count = count.CastTo(codegen, decimal);
 
         // Compute the average
-        final_val = sum_casted.Div(codegen, count_casted, OnError::ReturnNull);
+        final_val = sum.Div(codegen, count, OnError::ReturnNull);
         break;
       }
       default: {
@@ -563,8 +609,7 @@ void Aggregation::FinalizeValues(
     }
 
     // Insert into global map
-    all_vals.emplace(std::make_pair(agg_info.source_index, agg_type),
-                     final_val);
+    all_vals.emplace(std::make_pair(agg_info.source_idx, agg_type), final_val);
 
     // If the aggregate isn't internal, push the value out
     if (!agg_info.internal) {

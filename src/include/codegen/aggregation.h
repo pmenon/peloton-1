@@ -53,19 +53,19 @@ class Aggregation {
    * Create default initial values for all global aggregate components.
    *
    * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
+   * @param aggs A pointer to where all aggregates are contiguously stored
    */
-  void CreateInitialGlobalValues(CodeGen &codegen, llvm::Value *space) const;
+  void CreateInitialGlobalValues(CodeGen &codegen, llvm::Value *aggs) const;
 
   /**
    * Initialize a set of stored aggregates with the provided initial values
    *
    * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
+   * @param aggs A pointer to where all aggregates are contiguously stored
    * @param initial_vals The initial values of each aggregate
    */
   void CreateInitialValues(
-      CodeGen &codegen, llvm::Value *space,
+      CodeGen &codegen, llvm::Value *aggs,
       const std::vector<codegen::Value> &initial_vals) const;
 
   /**
@@ -73,31 +73,41 @@ class Aggregation {
    * using the delta values in the provided input vector
    *
    * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
+   * @param aggs A pointer to where all aggregates are contiguously stored
    * @param next The list of values to use to update each positionally-aligned
    * aggregate
    */
-  void AdvanceValues(CodeGen &codegen, llvm::Value *space,
+  void AdvanceValues(CodeGen &codegen, llvm::Value *aggs,
                      const std::vector<codegen::Value> &next) const;
 
   /**
+   * Advance the value of the distinct aggregate at the given position using
+   * the provided value. It is assumed that the provided aggregates follow the
+   * same format as this instance.
    *
-   * @param codegen
-   * @param space
-   * @param index
-   * @param val
+   * @param codegen The codegen instance
+   * @param aggs A pointer to a collection of aggregates
+   * @param index The index of the aggregate the caller wishes to advance
+   * @param val The value used to advance the aggregate
    */
-  void AdvanceDistinctValue(CodeGen &codegen, llvm::Value *space,
+  void AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
                             uint32_t index, const codegen::Value &val) const;
 
   /**
+   * Merge the (partial) aggregates provided in the two arguments and store the
+   * result in the destination aggregate argument. It is assumed that the
+   * aggregate layout is the same between the source and destination. This
+   * requires that the same instance of Aggregation was used to build each
+   * partial aggregate instance.
    *
-   * @param codegen
-   * @param curr_vals
-   * @param new_vals
+   * @param codegen The codegen instance
+   * @param dest_aggs A pointer to a collection of partially accumulated
+   * aggregates.
+   * @param src_aggs A pointer to a collection of partially accumulated
+   * aggregates that will be merged into the destination.
    */
-  void MergePartialAggregates(CodeGen &codegen, llvm::Value *curr_vals,
-                              llvm::Value *new_vals) const;
+  void MergePartialAggregates(CodeGen &codegen, llvm::Value *dest_aggs,
+                              llvm::Value *src_aggs) const;
 
   /**
    * Compute the final values of all the aggregates stored in the provided
@@ -129,15 +139,36 @@ class Aggregation {
   }
 
   /**
-   * This structure maps higher-level aggregates to their physical storage, and
-   * to their hash tables if they are distinct.
+   * Compute the type needed for a sum aggregate given the input attribute type
+   *
+   * @param input_type The type of values we're summing over
+   * @return The target type to use for the sum
+   */
+  static type::Type SumType(const type::Type &input_type);
+
+  /**
+   * Compute the type needed for a division given the type of the numerator and
+   * denominator to the division operation.
+   *
+   * @param numerator_type The SQL type of the numerator
+   * @param denominator_type The SQL type of the denominator
+   * @return The type to use for the output of the division
+   */
+  static type::Type DividingAggType(const type::Type &numerator_type,
+                                    const type::Type &denominator_type);
+
+  /**
+   * This structure maps higher-level aggregates to their physical storage in
+   * the underlying aggregate storage space.
    *
    * Some aggregates decompose into multiple components. For example, AVG()
-   * aggregates decompose into a SUM() and COUNT(). Therefore, the storage
-   * indexes are stored in an array. The array has fixed size of the maximum
-   * number of components that a aggregation is decomposed to, so for now
-   * only 2 for AVG. The aggregations have to know which component is
-   * stored at which index.
+   * aggregates decompose into a SUM() and COUNT() components that each have
+   * an instance of this struct. For example, in the case of an AVG(), three
+   * AggregateInfo structs are maintained, one for the sum, the count, and the
+   * average. The source index of each of these structures will be the same, but
+   * the storage index (i.e., where each component is stored) will differ. Since
+   * the sum and count are internal, their internal flags will be set to ensure
+   * we do not expose them externally.
    *
    * Storing the mapping from the physical position the aggregate is stored to
    * where the caller expects them allows us to rearrange positions without
@@ -145,14 +176,20 @@ class Aggregation {
    */
   struct AggregateInfo {
     // The overall type of the aggregation
-    const ExpressionType aggregate_type;
+    const ExpressionType agg_type;
+
+    // The type of this aggregate
+    const type::Type type;
+
+    // The expected output type
+    const type::Type output_type;
 
     // The position in the original (ordered) list of aggregates that this
     // aggregate is stored
-    const uint32_t source_index;
+    const uint32_t source_idx;
 
     // Th position in the physical storage where the aggregate is stored
-    const uint32_t storage_index;
+    const uint32_t storage_idx;
 
     // Is this aggregate purely internal?
     bool internal;
@@ -160,15 +197,29 @@ class Aggregation {
     // Is this aggregate distinct?
     bool distinct;
 
-    AggregateInfo(ExpressionType aggregate_type, uint32_t source_index,
-                  uint32_t storage_index, bool internal, bool distinct);
+    // Is this aggregate derived?
+    bool derived;
+
+    AggregateInfo(const ExpressionType _agg_type, const type::Type &_type,
+                  const type::Type &_output_type, const uint32_t _source_index,
+                  const uint32_t _storage_index, const bool _internal,
+                  const bool _distinct, const bool _derived)
+        : agg_type(_agg_type),
+          type(_type),
+          output_type(_output_type),
+          source_idx(_source_index),
+          storage_idx(_storage_index),
+          internal(_internal),
+          distinct(_distinct),
+          derived(_derived) {}
   };
 
  private:
-  void AdvanceSingleValue(CodeGen &codegen, llvm::Value *space,
-                          const AggregateInfo &agg_info,
-                          const codegen::Value &next,
-                          UpdateableStorage::NullBitmap &null_bitmap) const;
+  /// Common helper function to advance the value of a single aggregate
+  void AdvanceValue(CodeGen &codegen, llvm::Value *space,
+                    const AggregateInfo &agg_info,
+                    const codegen::Value &next,
+                    UpdateableStorage::NullBitmap &null_bitmap) const;
 
  private:
   // Is this a global aggregation?

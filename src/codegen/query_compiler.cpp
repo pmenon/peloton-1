@@ -45,15 +45,7 @@ std::unique_ptr<Query> QueryCompiler::Compile(
 // Check if the given query can be compiled. This search is not exhaustive ...
 bool QueryCompiler::IsSupported(const planner::AbstractPlan &plan) {
   switch (plan.GetPlanNodeType()) {
-    case PlanNodeType::AGGREGATE_V2: {
-      auto &agg_plan = static_cast<const planner::AggregatePlan &>(plan);
-      for (const auto &agg_term : agg_plan.GetUniqueAggTerms()) {
-        if (agg_term.distinct) {
-          return false;
-        }
-      }
-      break;
-    }
+    case PlanNodeType::AGGREGATE_V2:
     case PlanNodeType::CSVSCAN:
     case PlanNodeType::DELETE:
     case PlanNodeType::HASH:

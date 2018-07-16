@@ -66,7 +66,11 @@ llvm::Type *UpdateableStorage::Finalize(CodeGen &codegen) {
   std::sort(storage_format_.begin(), storage_format_.end(),
             [](const CompactStorage::EntryInfo &left,
                const CompactStorage::EntryInfo &right) {
-              return right.num_bytes < left.num_bytes;
+              if (right.num_bytes < left.num_bytes) {
+                return true;
+              } else {
+                return right.type->getTypeID() < left.type->getTypeID();
+              }
             });
 
   // Now we construct the LLVM type of this storage space
