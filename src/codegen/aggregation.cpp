@@ -497,8 +497,8 @@ void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
 void Aggregation::MergePartialAggregates(CodeGen &codegen,
                                          llvm::Value *dest_aggs,
                                          llvm::Value *src_aggs) const {
-  UpdateableStorage::NullBitmap curr_null_bitmap(codegen, storage_, dest_aggs);
-  UpdateableStorage::NullBitmap new_null_bitmap(codegen, storage_, src_aggs);
+  UpdateableStorage::NullBitmap dest_null_bitmap(codegen, storage_, dest_aggs);
+  UpdateableStorage::NullBitmap src_null_bitmap(codegen, storage_, src_aggs);
 
   for (const auto &agg_info : aggregate_infos_) {
     // Skip derivative aggregates. Their values will be finalized later.
@@ -506,8 +506,12 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
       continue;
     }
 
+    // The physical position in the underlying storage this aggregate is at
+    uint32_t storage_idx = agg_info.storage_idx;
+
     // If the aggregate isn't NULL-able, use the fast path to merge
-    if (!curr_null_bitmap.IsNullable(agg_info.storage_idx)) {
+    if (!dest_null_bitmap.IsNullable(storage_idx)) {
+      PELOTON_ASSERT(!src_null_bitmap.IsNullable(storage_idx));
       MergePartialAgg(codegen, storage_, agg_info, dest_aggs, src_aggs);
       continue;
     }
@@ -519,21 +523,19 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
      * partial. If both are non-NULL, we do a proper merge.
      */
 
-    uint32_t storage_idx = agg_info.storage_idx;
-
     llvm::Value *null_byte_snapshot =
-        curr_null_bitmap.ByteFor(codegen, storage_idx);
+        dest_null_bitmap.ByteFor(codegen, storage_idx);
 
-    llvm::Value *partial_null = new_null_bitmap.IsNull(codegen, storage_idx);
+    llvm::Value *partial_null = src_null_bitmap.IsNull(codegen, storage_idx);
     lang::If partial_not_null(codegen, codegen->CreateNot(partial_null));
     {
-      llvm::Value *current_null = curr_null_bitmap.IsNull(codegen, storage_idx);
+      llvm::Value *current_null = dest_null_bitmap.IsNull(codegen, storage_idx);
       lang::If curr_is_null(codegen, current_null);
       {
         auto partial =
             storage_.GetValueSkipNull(codegen, src_aggs, storage_idx);
         storage_.SetValue(codegen, dest_aggs, storage_idx, partial,
-                          curr_null_bitmap);
+                          dest_null_bitmap);
       }
       curr_is_null.ElseBlock();
       {
@@ -543,13 +545,16 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
       curr_is_null.EndIf();
 
       // Merge NULL value
-      curr_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
+      dest_null_bitmap.MergeValues(curr_is_null, null_byte_snapshot);
     }
     partial_not_null.EndIf();
 
     // Finalize value of NULL in bitmap
-    curr_null_bitmap.MergeValues(partial_not_null, null_byte_snapshot);
+    dest_null_bitmap.MergeValues(partial_not_null, null_byte_snapshot);
   }
+
+  // Write back
+  dest_null_bitmap.WriteBack(codegen);
 }
 
 void Aggregation::FinalizeValues(
