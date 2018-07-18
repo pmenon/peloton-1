@@ -336,7 +336,7 @@ TEST_F(SorterTest, ParallelSortVaryingSizeSortersTest) {
       uint32_t to_insert = static_cast<uint32_t>(rand() % 8000) + 200;
       LoadSorter(*sorter, to_insert);
 
-      LOG_DEBUG("TL sorter [%u] has %lu tuples", i, sorter->NumTuples());
+      LOG_DEBUG("TL sorter [%u] has %" PRIi64 " tuples", i, sorter->NumTuples());
 
       num_inserts += to_insert;
     }
@@ -366,7 +366,7 @@ TEST_F(SorterTest, ParallelSortVaryingSizeSortersTest) {
       auto to_insert = static_cast<uint32_t>(std::pow(10, i+1));
       LoadSorter(*sorter, to_insert);
 
-      LOG_DEBUG("TL sorter [%u] has %lu tuples", i, sorter->NumTuples());
+      LOG_DEBUG("TL sorter [%u] has %" PRIi64 " tuples", i, sorter->NumTuples());
 
       num_inserts += to_insert;
     }
