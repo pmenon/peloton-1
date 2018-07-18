@@ -340,7 +340,7 @@ void OrderByTranslator::Consume(ConsumerContext &ctx,
   llvm::Value *sorter_ptr = nullptr;
   if (ctx.GetPipeline().IsParallel()) {
     auto *pipeline_ctx = ctx.GetPipelineContext();
-    sorter_ptr = pipeline_ctx->LoadStatePtr(codegen, thread_sorter_id_);
+    sorter_ptr = pipeline_ctx->LoadStatePtr(codegen, tl_sorter_id_);
   } else {
     sorter_ptr = LoadStatePtr(sorter_id_);
   }
@@ -353,7 +353,7 @@ void OrderByTranslator::RegisterPipelineState(PipelineContext &pipeline_ctx) {
   if (pipeline_ctx.GetPipeline() == child_pipeline_ &&
       pipeline_ctx.IsParallel()) {
     auto *sorter_type = SorterProxy::GetType(GetCodeGen());
-    thread_sorter_id_ = pipeline_ctx.RegisterState("sorter", sorter_type);
+    tl_sorter_id_ = pipeline_ctx.RegisterState("sorter", sorter_type);
   }
 }
 
@@ -361,7 +361,7 @@ void OrderByTranslator::InitializePipelineState(PipelineContext &pipeline_ctx) {
   if (pipeline_ctx.GetPipeline() == child_pipeline_ &&
       pipeline_ctx.IsParallel()) {
     CodeGen &codegen = GetCodeGen();
-    auto *sorter_ptr = pipeline_ctx.LoadStatePtr(codegen, thread_sorter_id_);
+    auto *sorter_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_sorter_id_);
     auto *exec_ctx_ptr = GetExecutorContextPtr();
     sorter_.Init(codegen, sorter_ptr, exec_ctx_ptr, compare_func_);
   }
@@ -376,7 +376,7 @@ void OrderByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
   auto *sorter_ptr = LoadStatePtr(sorter_id_);
   if (pipeline_ctx.IsParallel()) {
     auto *thread_states_ptr = GetThreadStatesPtr();
-    auto offset = pipeline_ctx.GetEntryOffset(codegen, thread_sorter_id_);
+    auto offset = pipeline_ctx.GetEntryOffset(codegen, tl_sorter_id_);
     sorter_.SortParallel(codegen, sorter_ptr, thread_states_ptr, offset);
   } else {
     sorter_.Sort(codegen, sorter_ptr);
@@ -387,7 +387,7 @@ void OrderByTranslator::TearDownPipelineState(PipelineContext &pipeline_ctx) {
   if (pipeline_ctx.GetPipeline() == child_pipeline_ &&
       pipeline_ctx.IsParallel()) {
     CodeGen &codegen = GetCodeGen();
-    auto *sorter_ptr = pipeline_ctx.LoadStatePtr(codegen, thread_sorter_id_);
+    auto *sorter_ptr = pipeline_ctx.LoadStatePtr(codegen, tl_sorter_id_);
     sorter_.Destroy(codegen, sorter_ptr);
   }
 }

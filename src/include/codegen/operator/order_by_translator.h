@@ -59,7 +59,7 @@ class OrderByTranslator : public OperatorTranslator {
 
   // The ID of our sorter instance in the runtime state
   QueryState::Id sorter_id_;
-  PipelineContext::Id thread_sorter_id_;
+  PipelineContext::Id tl_sorter_id_;
 
   // The sorter translator instance
   Sorter sorter_;
