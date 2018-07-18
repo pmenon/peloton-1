@@ -332,7 +332,8 @@ llvm::Type *CodeGen::LookupType(const std::string &name) const {
   return GetModule().getTypeByName(name);
 }
 
-std::pair<llvm::Function *, CodeContext::FuncPtr> CodeGen::LookupBuiltin(const std::string &name) const {
+std::pair<llvm::Function *, CodeContext::FuncPtr> CodeGen::LookupBuiltin(
+    const std::string &name) const {
   return code_context_.LookupBuiltin(name);
 };
 
@@ -379,21 +380,22 @@ uint64_t CodeGen::ElementOffset(llvm::Type *type, uint32_t element_idx) const {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
-llvm::Value *CppProxyMember::Load(CodeGen &codegen,
-                                  llvm::Value *obj_ptr) const {
+llvm::Value *CppProxyMember::AddressOf(CodeGen &codegen,
+                                       llvm::Value *obj_ptr) const {
   llvm::SmallVector<llvm::Value *, 2> indexes = {codegen.Const32(0),
                                                  codegen.Const32(slot_)};
   // TODO(pmenon): Use CreateStructGEP()
-  llvm::Value *addr = codegen->CreateInBoundsGEP(obj_ptr, indexes);
-  return codegen->CreateLoad(addr);
+  return codegen->CreateInBoundsGEP(obj_ptr, indexes);
+}
+
+llvm::Value *CppProxyMember::Load(CodeGen &codegen,
+                                  llvm::Value *obj_ptr) const {
+  return codegen->CreateLoad(AddressOf(codegen, obj_ptr));
 }
 
 void CppProxyMember::Store(CodeGen &codegen, llvm::Value *obj_ptr,
                            llvm::Value *val) const {
-  llvm::SmallVector<llvm::Value *, 2> indexes = {codegen.Const32(0),
-                                                 codegen.Const32(slot_)};
-  llvm::Value *addr = codegen->CreateInBoundsGEP(obj_ptr, indexes);
-  codegen->CreateStore(val, addr);
+  codegen->CreateStore(val, AddressOf(codegen, obj_ptr));
 }
 
 }  // namespace codegen

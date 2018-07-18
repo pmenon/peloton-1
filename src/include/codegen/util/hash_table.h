@@ -126,6 +126,10 @@ class HashTable {
   using MergingFunction = void (*)(void *query_state, HashTable &table,
                                    HashTable::Entry **partition);
 
+  using MergeEntryFunction = void (*)(void *query_state,
+                                      HashTable::Entry *entry,
+                                      HashTable &table);
+
   using ScanFunction = void (*)(void *query_state, void *thread_state,
                                 const HashTable &table);
 
@@ -155,7 +159,7 @@ class HashTable {
    */
   void TransferPartitions(
       const executor::ExecutorContext::ThreadStates &thread_states,
-      uint32_t ht_offset);
+      uint32_t ht_offset, MergingFunction merge_func);
 
   /**
    * Execute a parallel scan over this partitioned hash table. The thread states
@@ -170,14 +174,36 @@ class HashTable {
    * @param query_state The (opaque) query state
    * @param thread_states The container holding all thread states
    * @param table The hash table we'll scan over
-   * @param merge_func The function used to merge overflow partitions into a
-   * new hash table
    * @param scan_func The callback scan function that will scan one partition of
    * the partitioned hash table
    */
   static void ExecutePartitionedScan(
       void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-      HashTable &table, MergingFunction merge_func, ScanFunction scan_func);
+      HashTable &table, ScanFunction scan_func);
+
+  /**
+   *
+   * @param query_state
+   */
+  void FinishPartitions(void *query_state);
+
+  /**
+   * Repartition all data stored in this partitioned hash table
+   */
+  void Repartition();
+
+  /**
+   * Merge the overflow partitions stored in this hash table into the build
+   * partitioned hash tables stored in the target hash table. We assume that
+   * the target hash table is partitioned.
+   *
+   * @param query_state An opaque state object pointer
+   * @param target The target hash table we merge our overflow partitions into
+   * @param merge_func The function we use to merge a single entry in our hash
+   * table into the target table.
+   */
+  void MergePartitions(void *query_state, HashTable &target,
+                       MergeEntryFunction merge_func);
 
   //////////////////////////////////////////////////////////////////////////////
   ///
@@ -504,8 +530,7 @@ class HashTable {
    * @return The constructed partition. This should be the same as in
    * part_tables_[partition_id]
    */
-  const HashTable *BuildPartitionedTable(void *query_state,
-                                         uint32_t partition_id);
+  HashTable *BuildPartitionedTable(void *query_state, uint32_t partition_id);
 
   /**
    * Reserve room in this hash table for at least the provided number of

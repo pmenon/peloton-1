@@ -37,6 +37,14 @@ class CppProxyMember {
   explicit CppProxyMember(uint32_t slot) noexcept : slot_(slot) {}
 
   /**
+   *
+   * @param codegen
+   * @param obj_ptr
+   * @return
+   */
+  llvm::Value *AddressOf(CodeGen &codegen, llvm::Value *obj_ptr) const;
+
+  /**
    * Load this member field from the provided struct pointer.
    *
    * @param codegen The codegen instance
@@ -119,22 +127,38 @@ class CodeGen {
     return CallFunc(proxy.GetFunction(*this), args);
   }
 
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// Struct/Class Member Access
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
   template <typename T>
-  llvm::Value *Load(const T &loader, llvm::Value *obj_ptr) {
-    return loader.Load(*this, obj_ptr);
+  llvm::Value *AddressOf(const T &member_access, llvm::Value *obj_ptr) {
+    return member_access.AddressOf(*this, obj_ptr);
   }
 
   template <typename T>
-  void Store(const T &storer, llvm::Value *obj_ptr, llvm::Value *val) {
-    storer.Store(*this, obj_ptr, val);
+  llvm::Value *Load(const T &member_access, llvm::Value *obj_ptr) {
+    return member_access.Load(*this, obj_ptr);
   }
 
-  //===--------------------------------------------------------------------===//
-  // C/C++ standard library functions
-  //===--------------------------------------------------------------------===//
+  template <typename T>
+  void Store(const T &member_access, llvm::Value *obj_ptr, llvm::Value *val) {
+    member_access.Store(*this, obj_ptr, val);
+  }
+
+  //////////////////////////////////////////////////////////////////////////////
+  ///
+  /// C/C++ standard library functions
+  ///
+  //////////////////////////////////////////////////////////////////////////////
+
   llvm::Value *Printf(const std::string &format,
                       const std::vector<llvm::Value *> &args);
+
   llvm::Value *Memcmp(llvm::Value *ptr_1, llvm::Value *ptr_2, llvm::Value *len);
+
   llvm::Value *Sqrt(llvm::Value *val);
 
   //===--------------------------------------------------------------------===//
@@ -156,7 +180,8 @@ class CodeGen {
   // Function lookup and registration
   //===--------------------------------------------------------------------===//
   llvm::Type *LookupType(const std::string &name) const;
-  std::pair<llvm::Function *, CodeContext::FuncPtr> LookupBuiltin(const std::string &name) const;
+  std::pair<llvm::Function *, CodeContext::FuncPtr> LookupBuiltin(
+      const std::string &name) const;
   llvm::Function *RegisterBuiltin(const std::string &fn_name,
                                   llvm::FunctionType *fn_type, void *func_impl);
 

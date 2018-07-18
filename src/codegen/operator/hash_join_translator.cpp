@@ -52,7 +52,8 @@ class HashJoinTranslator::ProbeRight : public HashTable::IterateCallback {
    * @param key The key stored in the tabble
    * @param data_area Memory space where the value is stored
    */
-  void ProcessEntry(CodeGen &codegen, const std::vector<codegen::Value> &key,
+  void ProcessEntry(CodeGen &codegen, llvm::Value *entry_ptr,
+                    const std::vector<codegen::Value> &key,
                     llvm::Value *data_area) const override;
 
  private:
@@ -413,7 +414,7 @@ void HashJoinTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
       // Then merge each local table in parallel
       PipelineContext::LoopOverStates loop_states{pipeline_ctx};
       loop_states.DoParallel([this, &pipeline_ctx, &codegen](
-          UNUSED_ATTRIBUTE llvm::Value *thread_state) {
+                                 UNUSED_ATTRIBUTE llvm::Value *thread_state) {
         llvm::Value *global_ht_ptr = LoadStatePtr(hash_table_id_);
         llvm::Value *local_ht_ptr =
             pipeline_ctx.LoadStatePtr(codegen, tl_hash_table_id_);
@@ -532,8 +533,8 @@ HashJoinTranslator::ProbeRight::ProbeRight(
       right_key_(right_key) {}
 
 void HashJoinTranslator::ProbeRight::ProcessEntry(
-    CodeGen &codegen, const std::vector<codegen::Value> &key,
-    llvm::Value *data_area) const {
+    CodeGen &codegen, UNUSED_ATTRIBUTE llvm::Value *entry_ptr,
+    const std::vector<codegen::Value> &key, llvm::Value *data_area) const {
   const auto &storage = join_translator_.left_value_storage_;
 
   if (join_translator_.needs_output_vector_) {

@@ -96,13 +96,13 @@ TEST_F(HashTableTest, UniqueKeysTest) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f =
-        [&key, &count, &c1](const Value &v) {
-          EXPECT_EQ(key.k2, v.v1)
-              << "Value's [v1] found in table doesn't match insert key";
-          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-          count++;
-        };
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
+      EXPECT_EQ(key.k2, v.v1)
+          << "Value's [v1] found in table doesn't match insert key";
+      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+      count++;
+    };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(1, count) << "Found duplicate keys in unique key test";
   }
@@ -163,13 +163,13 @@ TEST_F(HashTableTest, DuplicateKeysTest) {
   // Lookup
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f =
-        [&key, &count, &c1](const Value &v) {
-          EXPECT_EQ(key.k2, v.v1)
-              << "Value's [v1] found in table doesn't match insert key";
-          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-          count++;
-        };
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
+      EXPECT_EQ(key.k2, v.v1)
+          << "Value's [v1] found in table doesn't match insert key";
+      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+      count++;
+    };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(key.k1, count) << key << " found " << count << " dups ...";
   }
@@ -211,13 +211,13 @@ TEST_F(HashTableTest, LazyInsertsWithDupsTest) {
   // Lookups should succeed
   for (const auto &key : keys) {
     uint32_t count = 0;
-    std::function<void(const Value &v)> f =
-        [&key, &count, &c1](const Value &v) {
-          EXPECT_EQ(key.k2, v.v1)
-              << "Value's [v1] found in table doesn't match insert key";
-          EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
-          count++;
-        };
+    std::function<void(const Value &v)> f = [&key, &count,
+                                             &c1](const Value &v) {
+      EXPECT_EQ(key.k2, v.v1)
+          << "Value's [v1] found in table doesn't match insert key";
+      EXPECT_EQ(c1, v.v4) << "Value's [v4] doesn't match constant";
+      count++;
+    };
     table.TypedProbe(key.Hash(), key, f);
     EXPECT_EQ(key.k1, count) << key << " found " << count << " dups ...";
   }
@@ -434,9 +434,9 @@ TEST_F(HashTableTest, ParallelMergeTest) {
     std::function<void(const Value &v)> f = [&key, &count](const Value &v) {
       EXPECT_EQ(key.k2, v.v1)
           << "Value's [v1] found in table doesn't match insert key";
-      EXPECT_EQ(key.k1, v.v2) << "Key " << key << " inserted by thread "
-                              << key.k1 << " but value was inserted by thread "
-                              << v.v2;
+      EXPECT_EQ(key.k1, v.v2)
+          << "Key " << key << " inserted by thread " << key.k1
+          << " but value was inserted by thread " << v.v2;
       count++;
     };
     global_table.TypedProbe(key.Hash(), key, f);
@@ -537,10 +537,29 @@ TEST_F(HashTableTest, ParallelPartitionedBuild) {
     /// Transfer partitions to global table
     //////////////////////////////////////////////////////////////////
     {
+      // Given a linked-list overflow partition, build a single hash table
+      auto partitioned_build = [](void *, codegen::util::HashTable &table,
+                                  codegen::util::HashTable::Entry **partition) {
+        const Key *k;
+        const Value *v;
+        for (auto *entry = *partition; entry != nullptr; entry = entry->next) {
+          entry->GetKV(k, v);
+          table.TypedUpsert<false, Key, Value>(entry->hash, *k,
+                                               [&v](bool found, Value *curr) {
+                                                 if (found) {
+                                                   curr->v1 += v->v1;
+                                                 } else {
+                                                   *curr = *v;
+                                                 }
+                                               });
+        }
+      };
+
       // The "0" is for the offset of the hash table in the state. It's 0
       // because it's the only element in the state and it's situated in the
       // first slot.
-      global_table.TransferPartitions(ctx.GetThreadStates(), 0);
+      global_table.TransferPartitions(ctx.GetThreadStates(), 0,
+                                      partitioned_build);
 
       // Check
       auto &thread_states = ctx.GetThreadStates();
@@ -562,6 +581,7 @@ TEST_F(HashTableTest, ParallelPartitionedBuild) {
        private:
         std::mutex mutex;
         uint32_t num_groups;
+
        public:
         const uint32_t agg_val;
         explicit State(uint32_t v) : num_groups(0), agg_val(v) {}
@@ -578,48 +598,30 @@ TEST_F(HashTableTest, ParallelPartitionedBuild) {
        * the aggregate count is as expected, and increment the number of groups
        * we've seen.
        */
-      auto scan_fn =
-          [](void *query_state, void *, const codegen::util::HashTable &table) {
-            constexpr uint32_t vec_size = 512;
-            // Pull out state
-            auto *s = reinterpret_cast<State *>(query_state);
-            // Start scan
-            uint32_t vec[vec_size] = {0};
-            codegen::util::HashTable::ScanState scan(table, vec, vec_size);
-            while (!scan.Next()) {
-              auto *entries = scan.Entries();
-              for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
-                const Key *k;
-                const Value *v;
-                entries[i]->GetKV(k, v);
-                EXPECT_EQ(s->agg_val, v->v1);
-                s->IncGroupCount();
-              }
-            }
-          };
-
-      // Given a linked-list overflow partition, build a single hash table
-      auto partitioned_build = [](void *, codegen::util::HashTable &table,
-                                  codegen::util::HashTable::Entry **partition) {
-        const Key *k;
-        const Value *v;
-        for (auto *entry = *partition; entry != nullptr; entry = entry->next) {
-          entry->GetKV(k, v);
-          table.TypedUpsert<false, Key, Value>(entry->hash, *k,
-                                               [&v](bool found, Value *curr) {
-                                                 if (found) {
-                                                   curr->v1 += v->v1;
-                                                 } else {
-                                                   *curr = *v;
-                                                 }
-                                               });
+      auto scan_fn = [](void *query_state, void *,
+                        const codegen::util::HashTable &table) {
+        constexpr uint32_t vec_size = 512;
+        // Pull out state
+        auto *s = reinterpret_cast<State *>(query_state);
+        // Start scan
+        uint32_t vec[vec_size] = {0};
+        codegen::util::HashTable::ScanState scan(table, vec, vec_size);
+        while (!scan.Next()) {
+          auto *entries = scan.Entries();
+          for (uint32_t i = 0; i < scan.CurrentBatchSize(); i++) {
+            const Key *k;
+            const Value *v;
+            entries[i]->GetKV(k, v);
+            EXPECT_EQ(s->agg_val, v->v1);
+            s->IncGroupCount();
+          }
         }
       };
 
       // Execute scan over the global table
       codegen::util::HashTable::ExecutePartitionedScan(
           static_cast<void *>(&state), ctx.GetThreadStates(), global_table,
-          partitioned_build, scan_fn);
+          scan_fn);
 
       EXPECT_EQ(num_groups, state.NumGroups());
     }

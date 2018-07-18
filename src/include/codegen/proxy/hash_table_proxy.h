@@ -59,6 +59,9 @@ PROXY(HashTable) {
   DECLARE_METHOD(InsertPartitioned);
   DECLARE_METHOD(TransferPartitions);
   DECLARE_METHOD(ExecutePartitionedScan);
+  DECLARE_METHOD(FinishPartitions);
+  DECLARE_METHOD(Repartition);
+  DECLARE_METHOD(MergePartitions);
   DECLARE_METHOD(BuildLazy);
   DECLARE_METHOD(ReserveLazy);
   DECLARE_METHOD(MergeLazyUnfinished);

@@ -59,8 +59,11 @@ class HashGroupByTranslator : public OperatorTranslator {
   class ConsumerProbe;
   class ConsumerInsert;
   class ProduceResults;
-  class ParallelMerge;
-  class IterateDistinctTable;
+  class ParallelMergePartial;
+  class ParallelMergeDistinct;
+  class MergeDistinctAgg_AdvanceInMain;
+  class MergeDistinctAgg_IterateDistinct;
+  class MergeDistinctAgg_Rehash;
 
  private:
   bool HasDistinctAggregates() const { return !distinct_agg_infos_.empty(); }
@@ -94,12 +97,17 @@ class HashGroupByTranslator : public OperatorTranslator {
     QueryState::Id hash_table_id;
     PipelineContext::Id tl_hash_table_id;
     HashTable hash_table;
+    llvm::Function *initial_merge;
+    llvm::Function *final_merge;
+
     DistinctInfo(uint32_t _agg_pos, QueryState::Id _hash_table_id,
                  PipelineContext::Id _tl_hash_table_id, HashTable &&_hash_table)
         : agg_pos(_agg_pos),
           hash_table_id(_hash_table_id),
           tl_hash_table_id(_tl_hash_table_id),
-          hash_table(_hash_table) {}
+          hash_table(std::move(_hash_table)),
+          initial_merge(nullptr),
+          final_merge(nullptr) {}
   };
   std::vector<DistinctInfo> distinct_agg_infos_;
 

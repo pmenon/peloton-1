@@ -192,11 +192,16 @@ void HashTable::FlushToOverflowPartitions() {
   stats_.num_flushes++;
 }
 
-const HashTable *HashTable::BuildPartitionedTable(void *query_state,
-                                                  uint32_t partition_id) {
+HashTable *HashTable::BuildPartitionedTable(void *query_state,
+                                            uint32_t partition_id) {
   PELOTON_ASSERT(merging_func_ != nullptr &&
                  "No merging function is set. You should only call this "
                  "through BuildPartitioned() or TransferPartitions() ...");
+
+  // Return the table if it has already been built
+  if (part_tables_[partition_id] != nullptr) {
+    return part_tables_[partition_id];
+  }
 
   // Allocate a table
   auto *table = new (memory_.Allocate(sizeof(HashTable)))
@@ -214,13 +219,19 @@ const HashTable *HashTable::BuildPartitionedTable(void *query_state,
   // Merge the partition into the table using the compiled merging function
   merging_func_(query_state, *table, &part_heads_[partition_id]);
 
+  // Clear out partition list since its contents have been merged into table
+  part_heads_[partition_id] = part_tails_[partition_id] = nullptr;
+
   // Done
   return table;
 }
 
 void HashTable::TransferPartitions(
     const executor::ExecutorContext::ThreadStates &thread_states,
-    uint32_t ht_offset) {
+    uint32_t ht_offset, MergingFunction merge_func) {
+  PELOTON_ASSERT(merge_func != nullptr);
+  merging_func_ = merge_func;
+
   // Collect all thread-local hash tables
   std::vector<HashTable *> tables;
   thread_states.ForEach<HashTable>(ht_offset, [&tables](HashTable *hash_table) {
@@ -262,14 +273,9 @@ void HashTable::TransferPartitions(
 
 void HashTable::ExecutePartitionedScan(
     void *query_state, executor::ExecutorContext::ThreadStates &thread_states,
-    HashTable &table, MergingFunction merge_func, ScanFunction scan_func) {
-  // Set the merging function
-  PELOTON_ASSERT(merge_func != nullptr);
-  table.merging_func_ = merge_func;
-
+    HashTable &table, ScanFunction scan_func) {
   // Allocate partition tables array
-  PELOTON_ASSERT(table.part_tables_ == nullptr);
-  {
+  if (table.part_tables_ == nullptr) {
     auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
     table.part_tables_ =
         static_cast<HashTable **>(table.memory_.Allocate(num_bytes));
@@ -280,7 +286,8 @@ void HashTable::ExecutePartitionedScan(
   std::vector<uint32_t> part_ids;
   part_ids.reserve(kDefaultNumPartitions);
   for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
-    if (table.part_heads_[part_idx] != nullptr) {
+    if (table.part_heads_[part_idx] != nullptr ||
+        table.part_tables_[part_idx] != nullptr) {
       part_ids.push_back(part_idx);
     }
   }
@@ -327,6 +334,137 @@ void HashTable::ExecutePartitionedScan(
   timer.Stop();
   LOG_INFO("Built and scanned %zu partitions of hash table in %.2lf ms",
            part_ids.size(), timer.GetDuration());
+}
+
+void HashTable::FinishPartitions(void *query_state) {
+  // Allocate partition tables array
+  PELOTON_ASSERT(part_tables_ == nullptr);
+  {
+    auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
+    part_tables_ = static_cast<HashTable **>(memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(part_tables_, 0, num_bytes);
+  }
+
+  std::vector<uint32_t> part_ids;
+  part_ids.reserve(kDefaultNumPartitions);
+  for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+    if (part_heads_[part_idx] != nullptr) {
+      part_ids.push_back(part_idx);
+    }
+  }
+
+  // The pool we use to spawn work
+  auto &worker_pool = threadpool::MonoQueuePool::GetExecutionInstance();
+
+  // A latch we use to wait for all work to complete
+  common::synchronization::CountDownLatch latch(part_ids.size());
+
+  // For each valid partition, construct/build a hash table over its contents
+  for (const auto part_idx : part_ids) {
+    worker_pool.SubmitTask([this, query_state, &latch, part_idx]() {
+      // Build
+      BuildPartitionedTable(query_state, part_idx);
+      // Finish
+      latch.CountDown();
+    });
+  }
+
+  latch.Await(0);
+}
+
+void HashTable::Repartition() {
+  // Find all non-empty partitions
+  std::vector<HashTable *> part_tables;
+  part_tables.reserve(kDefaultNumPartitions);
+  for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+    if (part_tables_[part_idx] != nullptr) {
+      part_tables.push_back(part_tables_[part_idx]);
+    }
+  }
+
+  // The pool we use to spawn work
+  auto &worker_pool = threadpool::MonoQueuePool::GetExecutionInstance();
+
+  // A latch we use to wait for all work to complete
+  common::synchronization::CountDownLatch latch(part_tables.size());
+
+  // First, flush all hash table partitions to their overflow buckets.
+  for (auto *table : part_tables) {
+    worker_pool.SubmitTask([&latch, table]() {
+      // Flush
+      table->FlushToOverflowPartitions();
+      // Finish
+      latch.CountDown();
+    });
+  }
+
+  // Wait for each partitioned table to flush to overflows
+  latch.Await(0);
+
+  // Now, transfer each hash table partition's overflow buckets to us
+  for (auto *table : part_tables) {
+    for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+      if (table->part_heads_[part_idx] != nullptr) {
+        table->part_tails_[part_idx]->next = part_heads_[part_idx];
+        part_heads_[part_idx] = table->part_heads_[part_idx];
+        if (part_tails_[part_idx] == nullptr) {
+          part_tails_[part_idx] = table->part_tails_[part_idx];
+        }
+      }
+    }
+
+    // Move memory
+    table->TransferMemoryBlocks(*this);
+  }
+}
+
+void HashTable::MergePartitions(void *query_state, HashTable &target,
+                                MergeEntryFunction merge_func) {
+  if (target.part_tables_ == nullptr) {
+    // Allocate partition tables array
+    auto num_bytes = sizeof(HashTable) * kDefaultNumPartitions;
+    target.part_tables_ =
+        static_cast<HashTable **>(target.memory_.Allocate(num_bytes));
+    PELOTON_MEMSET(target.part_tables_, 0, num_bytes);
+  }
+
+  // Find all non-empty partitions
+  std::vector<uint32_t> part_ids;
+  part_ids.reserve(kDefaultNumPartitions);
+  for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {
+    if (part_heads_[part_idx] != nullptr) {
+      part_ids.push_back(part_idx);
+    }
+  }
+
+  // The pool we use to spawn work
+  auto &worker_pool = threadpool::MonoQueuePool::GetExecutionInstance();
+
+  // A latch we use to wait for all work to complete
+  common::synchronization::CountDownLatch latch(part_ids.size());
+
+  for (const auto part_idx : part_ids) {
+    Entry *partition = part_heads_[part_idx];
+    worker_pool.SubmitTask([query_state, &target, merge_func, &latch, part_idx,
+                            partition]() {
+      // Get partitioned hash table
+      auto *part_table = target.BuildPartitionedTable(query_state, part_idx);
+
+      // Merge our overflow partition into target table
+      for (Entry *entry = partition; entry != nullptr; entry = entry->next) {
+        merge_func(query_state, entry, *part_table);
+      }
+
+      // Finish
+      latch.CountDown();
+    });
+  }
+
+  // Wait for everything to finish
+  latch.Await(0);
+
+  // Move memory
+  TransferMemoryBlocks(target);
 }
 
 char *HashTable::InsertLazy(uint64_t hash) {

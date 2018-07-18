@@ -21,7 +21,7 @@
 namespace peloton {
 
 namespace planner {
-class AttributeInfo;
+struct AttributeInfo;
 }  // namespace planner
 
 namespace codegen {
@@ -159,6 +159,64 @@ class HashTable {
                       llvm::Value *partitions, MergeCallback &callback) const;
 
   /**
+   * Transfer all data stored in thread-local hash tables (in the provided
+   * ThreadStates object) into the main hash table. Use the provided merging
+   * function when ultimately coalescing an overflow partition.
+   *
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table into which all thread local data
+   * is transfered to. This table will become the owner of all the data.
+   * @param thread_states A pointer to the ThreadStates object
+   * @param tl_ht_state_offset The offset in the ThreadStates object where each
+   * thread-local hash table resides
+   * @param merging_func The merging function to use when merging an overflow
+   * partition into a hash table
+   */
+  void TransferPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                          llvm::Value *thread_states,
+                          uint32_t tl_ht_state_offset,
+                          llvm::Function *merging_func) const;
+
+  /**
+   *
+   * @param codegen
+   * @param ht_ptr
+   * @param query_state
+   */
+  void FinishPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                        llvm::Value *query_state) const;
+
+  /**
+   *
+   * @param codegen
+   * @param ht_ptr
+   * @param query_state
+   */
+  void Repartition(CodeGen &codegen, llvm::Value *ht_ptr) const;
+
+  /**
+   *
+   * @param codegen
+   * @param ht_ptr
+   * @param query_state
+   * @param merging_func
+   */
+  void MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                       llvm::Value *query_state, llvm::Value *target_ht_ptr,
+                       llvm::Function *merging_func) const;
+
+  /**
+   *
+   * @param codegen
+   * @param dest_ht_ptr
+   * @param src_ht_ptr
+   * @param merge_callback
+   */
+  void Merge(CodeGen &codegen, llvm::Value *dest_ht_ptr,
+             llvm::Value *src_ht_ptr, MergeCallback &merge_callback,
+             bool multithreaded) const;
+
+  /**
    * Iterate over all entries in the hash table, tuple-at-a-time.
    *
    * @param codegen The codegen instance
@@ -200,6 +258,16 @@ class HashTable {
    * @param ht_ptr A pointer to the hash table we're destroying
    */
   void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
+
+  /**
+   * Returns the keys for the provided Entry pointer
+   *
+   * @param codegen The codegen instance
+   * @param entry_ptr A pointer to a HashTable::Entry
+   * @param[out] key Output vector storing key components
+   */
+  llvm::Value *KeysForEntry(CodeGen &codegen, llvm::Value *entry_ptr,
+                            std::vector<codegen::Value> &key) const;
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -287,7 +355,7 @@ class HashTable {
      * @param key The key stored in the hash table
      * @param values A pointer to a set of bytes where the value is stored
      */
-    virtual void ProcessEntry(CodeGen &codegen,
+    virtual void ProcessEntry(CodeGen &codegen, llvm::Value *entry_ptr,
                               const std::vector<codegen::Value> &key,
                               llvm::Value *values) const = 0;
   };

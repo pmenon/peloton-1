@@ -25,11 +25,10 @@ class AggregatePlan;
 
 namespace codegen {
 
-//===----------------------------------------------------------------------===//
-// A global group-by is when only a single (global) group is produced as output.
-// Another way to think of it is a SQL statement with aggregates, but without
-// a group-by clause.
-//===----------------------------------------------------------------------===//
+/**
+ * A global group-by aggregation is used when no grouping key is provided in the
+ * query plan.
+ */
 class GlobalGroupByTranslator : public OperatorTranslator {
  public:
   GlobalGroupByTranslator(const planner::AggregatePlan &plan,
@@ -37,7 +36,7 @@ class GlobalGroupByTranslator : public OperatorTranslator {
 
   void InitializeQueryState() override;
 
-  void DefineAuxiliaryFunctions() override;
+  void DefineAuxiliaryFunctions() override {}
 
   void Produce() const override;
 
@@ -53,7 +52,8 @@ class GlobalGroupByTranslator : public OperatorTranslator {
  private:
   /// Helper classes defined later
   class BufferAttributeAccess;
-  class IterateDistinctTable;
+  class ParallelMergeDistinct;
+  class MergerDistinctAgg_IterateDistinct;
 
  private:
   // The pipeline the child operator of this aggregation belongs to
@@ -64,6 +64,7 @@ class GlobalGroupByTranslator : public OperatorTranslator {
 
   // The ID of our materialization buffer in the runtime state
   QueryState::Id mat_buffer_id_;
+  PipelineContext::Id tl_mat_buffer_id_;
 
   // These vectors track the IDs of all hash tables used for distinct aggregates
   struct DistinctInfo {
