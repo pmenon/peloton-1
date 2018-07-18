@@ -17,6 +17,7 @@
 #include "codegen/compilation_context.h"
 #include "codegen/consumer_context.h"
 #include "codegen/lang/loop.h"
+#include "codegen/lang/if.h"
 #include "codegen/proxy/executor_context_proxy.h"
 #include "codegen/proxy/runtime_functions_proxy.h"
 #include "settings/settings_manager.h"
@@ -48,12 +49,12 @@ PipelineContext::LoopOverStates::LoopOverStates(PipelineContext &pipeline_ctx)
 
 void PipelineContext::LoopOverStates::Do(
     const std::function<void(llvm::Value *)> &body) const {
-  auto &compilation_ctx = ctx_.GetPipeline().GetCompilationContext();
-  auto &exec_consumer = compilation_ctx.GetExecutionConsumer();
-  auto &codegen = compilation_ctx.GetCodeGen();
+  CompilationContext &comp_ctx = ctx_.GetPipeline().GetCompilationContext();
+  ExecutionConsumer &exec_consumer = comp_ctx.GetExecutionConsumer();
+  CodeGen &codegen = comp_ctx.GetCodeGen();
 
   llvm::Value *thread_states =
-      exec_consumer.GetThreadStatesPtr(compilation_ctx);
+      exec_consumer.GetThreadStatesPtr(comp_ctx);
 
   llvm::Value *num_threads =
       codegen.Load(ThreadStatesProxy::num_threads, thread_states);
@@ -74,6 +75,9 @@ void PipelineContext::LoopOverStates::Do(
     llvm::Value *raw_ptr = codegen->CreateInBoundsGEP(states, {offset});
     llvm::Value *state = codegen->CreatePointerCast(
         raw_ptr, ctx_.GetThreadStateType()->getPointerTo());
+
+    // Temporarily set the current active state to the one we're operating on
+    PipelineContext::SetState state_access(ctx_, state);
 
     // Invoke caller
     body(state);
@@ -105,7 +109,7 @@ void PipelineContext::LoopOverStates::DoParallel(
     auto *thread_state_ptr = func.GetArgumentByPosition(1);
 
     // Setup access to the thread state
-    PipelineContext::SetState state_access{ctx_, func.GetArgumentByPosition(1)};
+    PipelineContext::SetState state_access(ctx_, func.GetArgumentByPosition(1));
 
     // Execute function body
     body(thread_state_ptr);
@@ -428,14 +432,19 @@ void Pipeline::InitializePipeline(PipelineContext &pipeline_ctx) {
     PipelineContext::SetState state_access(pipeline_ctx,
                                            init_func.GetArgumentByPosition(1));
 
-    // Set initialized flag
-    pipeline_ctx.MarkInitialized(codegen);
+    llvm::Value *initialized = pipeline_ctx.LoadFlag(codegen);
+    lang::If not_initialized(codegen, codegen->CreateNot(initialized));
+    {
+      // Let each translator initialize their pipeline-related state
+      for (auto riter = pipeline_.rbegin(), rend = pipeline_.rend();
+           riter != rend; ++riter) {
+        (*riter)->InitializePipelineState(pipeline_ctx);
+      }
 
-    // Let each translator initialize
-    for (auto riter = pipeline_.rbegin(), rend = pipeline_.rend();
-         riter != rend; ++riter) {
-      (*riter)->InitializePipelineState(pipeline_ctx);
+      // Set initialized flag
+      pipeline_ctx.MarkInitialized(codegen);
     }
+    not_initialized.EndIf();
 
     // That's it
     init_func.ReturnAndFinish();
