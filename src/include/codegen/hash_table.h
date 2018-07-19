@@ -260,11 +260,12 @@ class HashTable {
   void Destroy(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
   /**
-   * Returns the keys for the provided Entry pointer
+   * Reads the key for the provided Entry, and returns a pointer to the payload
    *
    * @param codegen The codegen instance
    * @param entry_ptr A pointer to a HashTable::Entry
    * @param[out] key Output vector storing key components
+   * @return A pointer to the payload within the Entry
    */
   llvm::Value *KeysForEntry(CodeGen &codegen, llvm::Value *entry_ptr,
                             std::vector<codegen::Value> &key) const;
