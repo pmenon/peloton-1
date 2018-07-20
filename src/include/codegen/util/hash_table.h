@@ -124,7 +124,8 @@ class HashTable {
   //////////////////////////////////////////////////////////////////////////////
 
   using MergingFunction = void (*)(void *query_state, HashTable &table,
-                                   HashTable::Entry **partition);
+                                   HashTable::Entry **partition,
+                                   uint64_t begin_idx, uint64_t end_idx);
 
   using MergeEntryFunction = void (*)(void *query_state,
                                       HashTable::Entry *entry,

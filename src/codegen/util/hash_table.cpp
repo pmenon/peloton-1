@@ -217,7 +217,8 @@ HashTable *HashTable::BuildPartitionedTable(void *query_state,
   part_tables_[partition_id] = table;
 
   // Merge the partition into the table using the compiled merging function
-  merging_func_(query_state, *table, &part_heads_[partition_id]);
+  merging_func_(query_state, *table, part_heads_, partition_id,
+                partition_id + 1);
 
   // Clear out partition list since its contents have been merged into table
   part_heads_[partition_id] = part_tails_[partition_id] = nullptr;

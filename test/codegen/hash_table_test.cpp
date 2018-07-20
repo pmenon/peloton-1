@@ -539,19 +539,24 @@ TEST_F(HashTableTest, ParallelPartitionedBuild) {
     {
       // Given a linked-list overflow partition, build a single hash table
       auto partitioned_build = [](void *, codegen::util::HashTable &table,
-                                  codegen::util::HashTable::Entry **partition) {
+                                  codegen::util::HashTable::Entry **partition,
+                                  uint64_t begin_idx, uint64_t end_idx) {
         const Key *k;
         const Value *v;
-        for (auto *entry = *partition; entry != nullptr; entry = entry->next) {
-          entry->GetKV(k, v);
-          table.TypedUpsert<false, Key, Value>(entry->hash, *k,
-                                               [&v](bool found, Value *curr) {
-                                                 if (found) {
-                                                   curr->v1 += v->v1;
-                                                 } else {
-                                                   *curr = *v;
-                                                 }
-                                               });
+        for (uint64_t idx = begin_idx; idx < end_idx; idx++) {
+          auto *entry = partition[idx];
+          while (entry != nullptr) {
+            entry->GetKV(k, v);
+            table.TypedUpsert<false, Key, Value>(entry->hash, *k,
+                                                 [&v](bool found, Value *curr) {
+                                                   if (found) {
+                                                     curr->v1 += v->v1;
+                                                   } else {
+                                                     *curr = *v;
+                                                   }
+                                                 });
+            entry = entry->next;
+          }
         }
       };
 

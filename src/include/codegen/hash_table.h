@@ -140,23 +140,26 @@ class HashTable {
                            llvm::Value *local_ht) const;
 
   /**
-   * Merge all data stored in the provided overflow partition into the provided
-   * hash table. It is assumed that the partition list is a list of hash table
-   * entries with the same key storage format as the table we're merging into.
-   * The callback is invoked to merge the contents of an individual entry in the
-   * overflow partition into an entry in the hash table. If no match is found,
-   * a new entry is inserted into the hash table with the key and value taken
-   * from the partition entry.
+   * Merge all data stored in the partition range [begin_idx, end_idx] into the
+   * provided target hash table. It is assumed that the partition list contains
+   * hash table entries with the same key format as the table we're merging
+   * into. The callback is invoked to merge the contents of an individual entry
+   * in the overflow partition into an entry in the hash table. If no match is
+   * found, a new entry is inserted into the hash table with the key and value
+   * taken from the partition entry.
    *
    * @param codegen The codegen instance
-   * @param ht_ptr A pointer to the hash table we'll merge the partition data
-   * into
-   * @param partitions A linked list of overflow partition hash table entries
+   * @param target_ht_ptr A pointer to the hash table we'll merge the partition
+   * data into
+   * @param part_list A contiguous list of partition head pointers
+   * @param begin_idx The start index of the partition we're merging
+   * @param end_idx The end index of the partition we're merging
    * @param callback The callback invoked for each key match to merge contents
    * of the partition entry and the hash table entry
    */
-  void MergePartition(CodeGen &codegen, llvm::Value *ht_ptr,
-                      llvm::Value *partitions, MergeCallback &callback) const;
+  void MergePartitionRange(CodeGen &codegen, llvm::Value *target_ht_ptr,
+                           llvm::Value *part_list, llvm::Value *begin_idx,
+                           llvm::Value *end_idx, MergeCallback &callback) const;
 
   /**
    * Transfer all data stored in thread-local hash tables (in the provided
@@ -210,10 +213,10 @@ class HashTable {
    * @param codegen
    * @param dest_ht_ptr
    * @param src_ht_ptr
-   * @param merge_callback
+   * @param callback
    */
   void Merge(CodeGen &codegen, llvm::Value *dest_ht_ptr,
-             llvm::Value *src_ht_ptr, MergeCallback &merge_callback,
+             llvm::Value *src_ht_ptr, MergeCallback &callback,
              bool multithreaded) const;
 
   /**

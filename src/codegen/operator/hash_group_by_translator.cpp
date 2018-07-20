@@ -501,19 +501,24 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
     std::vector<FunctionDeclaration::ArgumentInfo> arg_infos = {
         {"queryState", query_state.GetType()->getPointerTo()},
         {"hashTable", HashTableProxy::GetType(codegen)->getPointerTo()},
-        {"partition",
-         EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()}};
+        {"partitionList",
+         EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()},
+        {"begin", codegen.Int64Type()},
+        {"end", codegen.Int64Type()}};
     FunctionDeclaration decl(codegen.GetCodeContext(), "mergePartition",
                              FunctionDeclaration::Visibility::Internal,
                              codegen.VoidType(), arg_infos);
     FunctionBuilder merge_parts(codegen.GetCodeContext(), decl);
     {
       auto *table = merge_parts.GetArgumentByName("hashTable");
-      auto *partition = merge_parts.GetArgumentByName("partition");
+      auto *partition = merge_parts.GetArgumentByName("partitionList");
+      auto *begin = merge_parts.GetArgumentByName("begin");
+      auto *end = merge_parts.GetArgumentByName("end");
 
       // Do the merge
       ParallelMergePartial parallel_merge(aggregation_);
-      hash_table_.MergePartition(codegen, table, partition, parallel_merge);
+      hash_table_.MergePartitionRange(codegen, table, partition, begin, end,
+                                      parallel_merge);
 
       merge_parts.ReturnAndFinish();
     }
@@ -530,8 +535,10 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
       std::vector<FunctionDeclaration::ArgumentInfo> arg_infos = {
           {"queryState", query_state.GetType()->getPointerTo()},
           {"hashTable", HashTableProxy::GetType(codegen)->getPointerTo()},
-          {"partition",
-           EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()}};
+          {"partitionList",
+           EntryProxy::GetType(codegen)->getPointerTo()->getPointerTo()},
+          {"begin", codegen.Int64Type()},
+          {"end", codegen.Int64Type()}};
       FunctionDeclaration decl(codegen.GetCodeContext(),
                                "distinctMergeAndRehash",
                                FunctionDeclaration::Visibility::Internal,
@@ -539,11 +546,14 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
       FunctionBuilder initial_merge(codegen.GetCodeContext(), decl);
       {
         auto *table = initial_merge.GetArgumentByName("hashTable");
-        auto *partition = initial_merge.GetArgumentByName("partition");
+        auto *partition = initial_merge.GetArgumentByName("partitionList");
+        auto *begin = initial_merge.GetArgumentByName("begin");
+        auto *end = initial_merge.GetArgumentByName("end");
 
         // Merge
         ParallelMergeDistinct noop_merge;
-        distinct_table.MergePartition(codegen, table, partition, noop_merge);
+        distinct_table.MergePartitionRange(codegen, table, partition, begin,
+                                           end, noop_merge);
 
         // Rehash
         MergeDistinctAgg_Rehash rehash;
