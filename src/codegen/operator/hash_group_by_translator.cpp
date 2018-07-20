@@ -516,9 +516,11 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
       auto *end = merge_parts.GetArgumentByName("end");
 
       // Do the merge
+      bool allow_grow = true;
       ParallelMergePartial parallel_merge(aggregation_);
       hash_table_.MergePartitionRange(codegen, table, partition, begin, end,
-                                      parallel_merge);
+                                      HashTable::LockMode::NoLock,
+                                      parallel_merge, allow_grow);
 
       merge_parts.ReturnAndFinish();
     }
@@ -551,9 +553,11 @@ void HashGroupByTranslator::DefineAuxiliaryFunctions() {
         auto *end = initial_merge.GetArgumentByName("end");
 
         // Merge
+        bool allow_grow = true;
         ParallelMergeDistinct noop_merge;
         distinct_table.MergePartitionRange(codegen, table, partition, begin,
-                                           end, noop_merge);
+                                           end, HashTable::LockMode::NoLock,
+                                           noop_merge, allow_grow);
 
         // Rehash
         MergeDistinctAgg_Rehash rehash;

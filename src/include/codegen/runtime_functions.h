@@ -29,7 +29,7 @@ struct PredicateInfo;
 
 namespace expression {
 class AbstractExpression;
-}  // namespace storage
+}  // namespace expression
 
 namespace codegen {
 //===----------------------------------------------------------------------===//
@@ -77,7 +77,14 @@ class RuntimeFunctions {
    */
   static void GetTileGroupLayout(const storage::TileGroup *tile_group,
                                  ColumnLayoutInfo *infos, uint32_t num_cols);
-  
+
+  /**
+   *
+   * @param ptr
+   * @return
+   */
+  static void *SpinLockPointer(void **ptr);
+
   /**
    * Execute a parallel scan over the given table in the given database.
    *

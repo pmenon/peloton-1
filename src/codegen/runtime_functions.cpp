@@ -18,8 +18,8 @@
 
 #include "common/exception.h"
 #include "common/logger.h"
-#include "common/timer.h"
 #include "common/synchronization/count_down_latch.h"
+#include "common/timer.h"
 #include "expression/abstract_expression.h"
 #include "storage/data_table.h"
 #include "storage/layout.h"
@@ -143,6 +143,24 @@ void RuntimeFunctions::GetTileGroupLayout(const storage::TileGroup *tile_group,
   // Ensure that ColumnLayoutInfo for each column has been populated.
   PELOTON_ASSERT((last_col_idx != INVALID_OID) &&
                  (last_col_idx == (num_cols - 1)));
+}
+
+void *RuntimeFunctions::SpinLockPointer(void **ptr) {
+  static constexpr void *locked = (void *)-1;
+
+  std::atomic<void *> lock(*ptr);
+  while (true) {
+    // Wait for lock to be free
+    void *curr = nullptr;
+    do {
+      curr = lock.load();
+    } while (curr == locked);
+
+    // Try lock
+    if (lock.compare_exchange_weak(curr, locked)) {
+      return curr;
+    }
+  }
 }
 
 void RuntimeFunctions::ExecuteTableScan(

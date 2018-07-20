@@ -176,21 +176,6 @@ void GlobalGroupByTranslator::Produce() const {
   GetCompilationContext().Produce(*GetPlan().GetChild(0));
 
   /*
-   * At this point, we've merged all non-distinct aggregates into our global
-   * aggregation buffer. We now merge all distinct aggregates.
-   */
-
-  for (const auto &distinct_info : distinct_agg_infos_) {
-    const HashTable &distinct_table = distinct_info.hash_table;
-
-    llvm::Value *distinct_ht_ptr = LoadStatePtr(distinct_info.hash_table_id);
-
-    MergerDistinctAgg_IterateDistinct iter(agg_vals, aggregation_,
-                                           distinct_info.agg_pos);
-    distinct_table.Iterate(GetCodeGen(), distinct_ht_ptr, iter);
-  }
-
-  /*
    * Aggregation is now complete. We just scan the results and send to parent.
    */
 
@@ -382,9 +367,10 @@ void GlobalGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
    * will be O(T) where T is the number of execution threads), and the merging
    * process requires a few arithmetic computations per aggregate.
    */
-  {
-    llvm::Value *aggs = LoadStatePtr(mat_buffer_id_);
 
+  llvm::Value *aggs = LoadStatePtr(mat_buffer_id_);
+
+  {
     PipelineContext::LoopOverStates merge_partial(pipeline_ctx);
     merge_partial.Do(
         [this, &pipeline_ctx, aggs](UNUSED_ATTRIBUTE llvm::Value *state) {
@@ -411,10 +397,25 @@ void GlobalGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
             GetCodeGen(), distinct_info.tl_hash_table_id);
 
         // Merge contents
+        bool multi_threaded = true;
         ParallelMergeDistinct noop_merge;
-        table.Merge(GetCodeGen(), main_ht, tl_ht, noop_merge, true);
+        table.Merge(GetCodeGen(), main_ht, tl_ht, noop_merge, multi_threaded);
       });
     }
+  }
+
+  /*
+   * Now, merge each distinct aggregate into the main global aggregate table
+   */
+
+  for (const auto &distinct_info : distinct_agg_infos_) {
+    const HashTable &distinct_table = distinct_info.hash_table;
+
+    llvm::Value *distinct_ht_ptr = LoadStatePtr(distinct_info.hash_table_id);
+
+    MergerDistinctAgg_IterateDistinct iter(aggs, aggregation_,
+                                           distinct_info.agg_pos);
+    distinct_table.Iterate(GetCodeGen(), distinct_ht_ptr, iter);
   }
 }
 

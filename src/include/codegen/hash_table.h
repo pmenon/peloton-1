@@ -47,7 +47,9 @@ class HashTable {
   class IterateCallback;
   class VectorizedIterateCallback;
 
-  enum class InsertMode { Normal, Lazy, Partitioned };
+  enum class InsertMode : uint8_t { Normal, Lazy, Partitioned };
+
+  enum class LockMode : uint8_t { NoLock, SpinLock };
 
  public:
   //////////////////////////////////////////////////////////////////////////////
@@ -159,7 +161,8 @@ class HashTable {
    */
   void MergePartitionRange(CodeGen &codegen, llvm::Value *target_ht_ptr,
                            llvm::Value *part_list, llvm::Value *begin_idx,
-                           llvm::Value *end_idx, MergeCallback &callback) const;
+                           llvm::Value *end_idx, LockMode lock_mode,
+                           MergeCallback &callback, bool allow_growth) const;
 
   /**
    * Transfer all data stored in thread-local hash tables (in the provided
