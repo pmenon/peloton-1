@@ -146,7 +146,7 @@ void RuntimeFunctions::GetTileGroupLayout(const storage::TileGroup *tile_group,
 }
 
 void *RuntimeFunctions::SpinLockPointer(void **ptr) {
-  static constexpr void *locked = (void *)-1;
+  static constexpr int64_t locked = -1;
 
   std::atomic<void *> lock(*ptr);
   while (true) {
@@ -154,10 +154,10 @@ void *RuntimeFunctions::SpinLockPointer(void **ptr) {
     void *curr = nullptr;
     do {
       curr = lock.load();
-    } while (curr == locked);
+    } while (curr == reinterpret_cast<void*>(locked));
 
     // Try lock
-    if (lock.compare_exchange_weak(curr, locked)) {
+    if (lock.compare_exchange_weak(curr, reinterpret_cast<void*>(locked))) {
       return curr;
     }
   }

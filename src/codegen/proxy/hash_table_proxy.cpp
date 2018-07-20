@@ -77,7 +77,7 @@ DEFINE_METHOD(peloton::codegen::util, HashTable, InsertLazy);
 DEFINE_METHOD(peloton::codegen::util, HashTable, InsertPartitioned);
 DEFINE_METHOD(peloton::codegen::util, HashTable, TransferPartitions);
 DEFINE_METHOD(peloton::codegen::util, HashTable, ExecutePartitionedScan);
-DEFINE_METHOD(peloton::codegen::util, HashTable, FinishPartitions);
+DEFINE_METHOD(peloton::codegen::util, HashTable, BuildAllPartitions);
 DEFINE_METHOD(peloton::codegen::util, HashTable, Repartition);
 DEFINE_METHOD(peloton::codegen::util, HashTable, MergePartitions);
 DEFINE_METHOD(peloton::codegen::util, HashTable, BuildLazy);

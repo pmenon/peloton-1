@@ -337,7 +337,7 @@ void HashTable::ExecutePartitionedScan(
            part_ids.size(), timer.GetDuration());
 }
 
-void HashTable::FinishPartitions(void *query_state) {
+void HashTable::BuildAllPartitions(void *query_state) {
   // Allocate partition tables array
   PELOTON_ASSERT(part_tables_ == nullptr);
   {

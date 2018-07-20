@@ -183,10 +183,10 @@ class HashTable {
       HashTable &table, ScanFunction scan_func);
 
   /**
-   *
+   * Build
    * @param query_state
    */
-  void FinishPartitions(void *query_state);
+  void BuildAllPartitions(void *query_state);
 
   /**
    * Repartition all data stored in this partitioned hash table
@@ -194,9 +194,9 @@ class HashTable {
   void Repartition();
 
   /**
-   * Merge the overflow partitions stored in this hash table into the build
-   * partitioned hash tables stored in the target hash table. We assume that
-   * the target hash table is partitioned.
+   * Merge all data stored in this hash table's overflow partitions into the
+   * provided target hash table. We assume that both source and target hash
+   * tables are partitioned using the same partitioning key.
    *
    * @param query_state An opaque state object pointer
    * @param target The target hash table we merge our overflow partitions into

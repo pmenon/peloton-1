@@ -77,9 +77,6 @@ class HashGroupByTranslator : public OperatorTranslator {
   // Should this operator employ prefetching?
   bool UsePrefetching() const;
 
-  //
-  void MergeDistinctAggregates() const;
-
  private:
   // The pipeline forming all child operators of this aggregation
   Pipeline child_pipeline_;

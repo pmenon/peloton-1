@@ -977,19 +977,37 @@ void HashGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
     return;
   }
 
-  /*
-   * We've consumed all tuples from the child plan. If we have any distinct
-   * aggregates, we need to merge those in before producing output tuples.
-   */
+  CodeGen &codegen = GetCodeGen();
 
   if (!pipeline_ctx.IsParallel()) {
+    /*
+     * In serial mode, all non-distinct aggregates have been computed in the
+     * main aggregate hash table. We now need to merge in all distinct
+     * aggregates stored in each of the distinct hash tables.
+     */
+
+    // The main aggregate hash table
+    llvm::Value *main_agg_table = LoadStatePtr(hash_table_id_);
+
     if (HasDistinctAggregates()) {
-      MergeDistinctAggregates();
+      for (const auto &distinct_info : distinct_agg_infos_) {
+        // Load the hash table access class for this distinct aggregate
+        const HashTable &hash_table = distinct_info.hash_table;
+
+        // Load the pointer to this distinct aggregate's hash table
+        llvm::Value *distinct_ht_ptr =
+            LoadStatePtr(distinct_info.hash_table_id);
+
+        // Do the merge
+        MergeDistinctAgg_IterateDistinct merge_distinct(
+            hash_table_, main_agg_table, aggregation_, distinct_info.agg_pos);
+        hash_table.Iterate(codegen, distinct_ht_ptr, merge_distinct);
+      }
     }
+
+    // That's it, the consumer-side pipeline is done
     return;
   }
-
-  CodeGen &codegen = GetCodeGen();
 
   /*
    * In parallel aggregation, after we're built thread-local hash tables, we
@@ -1040,7 +1058,7 @@ void HashGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
         distinct_info.initial_merge);
 
     // Next, finish construction of hash table partitions
-    distinct_table.FinishPartitions(codegen, distinct_ht_ptr, query_state);
+    distinct_table.BuildAllPartitions(codegen, distinct_ht_ptr, query_state);
 
     // Next, repartition all data since we've rehashed everything using just the
     // main grouping key (i.e., removing the distinct aggregate expression)
@@ -1082,25 +1100,6 @@ void HashGroupByTranslator::TearDownPipelineState(
         pipeline_ctx.LoadStatePtr(codegen, distinct_info.tl_hash_table_id);
 
     distinct_table.Destroy(codegen, tl_distinct_ht_ptr);
-  }
-}
-
-void HashGroupByTranslator::MergeDistinctAggregates() const {
-  CodeGen &codegen = GetCodeGen();
-
-  llvm::Value *agg_ht_ptr = LoadStatePtr(hash_table_id_);
-
-  for (const auto &distinct_info : distinct_agg_infos_) {
-    // Load the pointer to this distinct aggregate's hash table
-    llvm::Value *distinct_ht_ptr = LoadStatePtr(distinct_info.hash_table_id);
-
-    // Load the hash table access class for this distinct aggregate
-    const HashTable &hash_table = distinct_info.hash_table;
-
-    // Do the merge
-    MergeDistinctAgg_IterateDistinct merge_distinct(
-        hash_table_, agg_ht_ptr, aggregation_, distinct_info.agg_pos);
-    hash_table.Iterate(codegen, distinct_ht_ptr, merge_distinct);
   }
 }
 

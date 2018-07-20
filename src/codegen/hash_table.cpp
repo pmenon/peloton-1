@@ -498,13 +498,13 @@ void HashTable::TransferPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
   codegen.Call(HashTableProxy::TransferPartitions, args);
 }
 
-void HashTable::FinishPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
-                                 llvm::Value *query_state) const {
+void HashTable::BuildAllPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                                   llvm::Value *query_state) const {
   std::vector<llvm::Value *> args = {
       ht_ptr, codegen->CreatePointerCast(query_state, codegen.VoidPtrType())};
 
   // Call
-  codegen.Call(HashTableProxy::FinishPartitions, args);
+  codegen.Call(HashTableProxy::BuildAllPartitions, args);
 }
 
 void HashTable::Repartition(CodeGen &codegen, llvm::Value *ht_ptr) const {

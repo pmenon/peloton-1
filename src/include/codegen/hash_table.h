@@ -184,39 +184,46 @@ class HashTable {
                           llvm::Function *merging_func) const;
 
   /**
+   * Construct hash tables over all overflow partitions in the given hash table.
    *
-   * @param codegen
-   * @param ht_ptr
-   * @param query_state
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we're building
+   * @param query_state An opaque state object pointer
    */
-  void FinishPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
-                        llvm::Value *query_state) const;
+  void BuildAllPartitions(CodeGen &codegen, llvm::Value *ht_ptr,
+                          llvm::Value *query_state) const;
 
   /**
+   * Repartition all data stored in this hash table using the hash value stored
+   * in the entries.
    *
-   * @param codegen
-   * @param ht_ptr
-   * @param query_state
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the hash table we'll repartition
+   * @param query_state An opaque state object pointer
    */
   void Repartition(CodeGen &codegen, llvm::Value *ht_ptr) const;
 
   /**
+   * Merge all partitions stored in the source table into the target hash table
    *
-   * @param codegen
-   * @param ht_ptr
-   * @param query_state
-   * @param merging_func
+   * @param codegen The codegen instance
+   * @param ht_ptr A pointer to the source table containing partitioned data
+   * @param query_state An opaque state object pointer
+   * @param merging_func The merging function that can merge an individual
+   * entry into the target hash table.
    */
   void MergePartitions(CodeGen &codegen, llvm::Value *ht_ptr,
                        llvm::Value *query_state, llvm::Value *target_ht_ptr,
                        llvm::Function *merging_func) const;
 
   /**
+   * Merge two hash tables together.
    *
-   * @param codegen
-   * @param dest_ht_ptr
-   * @param src_ht_ptr
-   * @param callback
+   * @param codegen The codegen instance
+   * @param dest_ht_ptr A pointer to the hash table that is updated
+   * @param src_ht_ptr A pointer to the source hash table that is read
+   * @param callback The callback used to merge tables together
+   * @param multithreaded Does this merge happen in a concurrent setting?
    */
   void Merge(CodeGen &codegen, llvm::Value *dest_ht_ptr,
              llvm::Value *src_ht_ptr, MergeCallback &callback,
