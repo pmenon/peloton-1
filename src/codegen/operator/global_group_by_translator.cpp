@@ -355,57 +355,74 @@ void GlobalGroupByTranslator::InitializePipelineState(
 }
 
 void GlobalGroupByTranslator::FinishPipeline(PipelineContext &pipeline_ctx) {
-  if (pipeline_ctx.GetPipeline() != child_pipeline_ ||
-      !pipeline_ctx.IsParallel()) {
+  if (pipeline_ctx.GetPipeline() != child_pipeline_) {
     return;
   }
 
   /*
-   * First, merge in the partially accumulate aggregates directly into the
-   * global aggregate materialization buffer. This is done serially since we
-   * expect few thread-local aggregates (e.g., # partial aggregate buffers
-   * will be O(T) where T is the number of execution threads), and the merging
-   * process requires a few arithmetic computations per aggregate.
+   * Load the main aggregate buffer here since we'll use it throughout the rest
+   * of this function.
    */
 
   llvm::Value *aggs = LoadStatePtr(mat_buffer_id_);
 
-  {
-    PipelineContext::LoopOverStates merge_partial(pipeline_ctx);
-    merge_partial.Do(
-        [this, &pipeline_ctx, aggs](UNUSED_ATTRIBUTE llvm::Value *state) {
-          llvm::Value *partial_aggs =
-              pipeline_ctx.LoadStatePtr(GetCodeGen(), tl_mat_buffer_id_);
-          aggregation_.MergePartialAggregates(GetCodeGen(), aggs, partial_aggs);
-        });
-  }
-
   /*
-   * Next, we transfer all thread-local distinct table data into the global
-   * distinct hash table for each distinct aggregate.
+   * In parallel mode, we need to coalesce partially aggregated thread-local
+   * data into a global hash table. Ditto for distinct aggregates. So let's do
+   * that below.
    */
-  {
-    for (const auto &distinct_info : distinct_agg_infos_) {
-      PipelineContext::LoopOverStates merge_distinct(pipeline_ctx);
-      merge_distinct.DoParallel([this, &pipeline_ctx, &distinct_info](
-                                    UNUSED_ATTRIBUTE llvm::Value *state) {
-        const HashTable &table = distinct_info.hash_table;
 
-        llvm::Value *main_ht = LoadStatePtr(distinct_info.hash_table_id);
+  if (pipeline_ctx.IsParallel()) {
+    /*
+     * First, merge in the partially accumulate aggregates directly into the
+     * global aggregate materialization buffer. This is done serially since we
+     * expect few thread-local aggregates (e.g., # partial aggregate buffers
+     * will be O(T) where T is the number of execution threads), and the merging
+     * process requires a few arithmetic computations per aggregate.
+     */
 
-        llvm::Value *tl_ht = pipeline_ctx.LoadStatePtr(
-            GetCodeGen(), distinct_info.tl_hash_table_id);
 
-        // Merge contents
-        bool multi_threaded = true;
-        ParallelMergeDistinct noop_merge;
-        table.Merge(GetCodeGen(), main_ht, tl_ht, noop_merge, multi_threaded);
-      });
+    {
+      PipelineContext::LoopOverStates merge_partial(pipeline_ctx);
+      merge_partial.Do(
+          [this, &pipeline_ctx, aggs](UNUSED_ATTRIBUTE llvm::Value *state) {
+            llvm::Value *partial_aggs =
+                pipeline_ctx.LoadStatePtr(GetCodeGen(), tl_mat_buffer_id_);
+            aggregation_.MergePartialAggregates(GetCodeGen(),
+                                                aggs,
+                                                partial_aggs);
+          });
+    }
+
+    /*
+     * Next, we transfer all thread-local distinct table data into the global
+     * distinct hash table for each distinct aggregate.
+     */
+    {
+      for (const auto &distinct_info : distinct_agg_infos_) {
+        PipelineContext::LoopOverStates merge_distinct(pipeline_ctx);
+        merge_distinct.DoParallel([this, &pipeline_ctx, &distinct_info](
+            UNUSED_ATTRIBUTE llvm::Value *state) {
+          const HashTable &table = distinct_info.hash_table;
+
+          llvm::Value *main_ht = LoadStatePtr(distinct_info.hash_table_id);
+
+          llvm::Value *tl_ht = pipeline_ctx.LoadStatePtr(
+              GetCodeGen(), distinct_info.tl_hash_table_id);
+
+          // Merge contents
+          bool multi_threaded = true;
+          ParallelMergeDistinct noop_merge;
+          table.Merge(GetCodeGen(), main_ht, tl_ht, noop_merge, multi_threaded);
+        });
+      }
     }
   }
 
   /*
-   * Now, merge each distinct aggregate into the main global aggregate table
+   * At this point, the main aggregate table has finalized values for all
+   * non-distinct aggregates. What's left is to merge in all data from each of
+   * the distinct hash tables that we've built, too.
    */
 
   for (const auto &distinct_info : distinct_agg_infos_) {
