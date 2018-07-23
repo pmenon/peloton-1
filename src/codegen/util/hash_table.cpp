@@ -258,6 +258,10 @@ void HashTable::TransferPartitions(
     PELOTON_MEMSET(part_tails_, 0, num_bytes);
   }
 
+  if (NumElements() > 0) {
+    FlushToOverflowPartitions();
+  }
+
   // Transfer overflow partitions from each thread-local hash table to us
   for (auto *table : tables) {
     for (uint32_t part_idx = 0; part_idx < kDefaultNumPartitions; part_idx++) {

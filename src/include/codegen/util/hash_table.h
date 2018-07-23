@@ -40,14 +40,21 @@ namespace util {
  *
  * Partitioned mode:
  * -----------------
- * Partitioned mode is designed for large-scale aggregations. In this mode, no
- * duplicate keys are allowed.
+ * Partitioned mode is designed for large-scale aggregations. In this mode, the
+ * hash table has a fixed size (ideally fitting into L2/L3 cache) and overflows
+ * into a (fixed) set of overflow partitions when full. During partitioned
+ * processing, the hash table doesn't guarantee visibility of previously
+ * inserted data. When all insertions are complete, BuildAllPartitions()
+ * appropriately merges data in each overflow partition producing a new
+ * HashTable that correctly reflects all previous insertions.
  *
  * Lazy mode:
  * ----------
- * In lazy mode, the hash table becomes a two-phase write-once-read-many (WORM)
- * structure. In the first phase, only inserts are allowed. After all inserts
- * are complete, the table "frozen" after which the table becomes read-only.
+ * In lazy mode, the hash table is a two-phase write-once-read-many (WORM)
+ * structure. In the first phase, only inserts are allowed, and the hash table
+ * does not guarantee visibility of previously inserted data. After all inserts
+ * are complete, the table is "frozen" converting it into a read-only structure
+ * that correctly reflects all previous insertions.
  *
  * In lazy mode, InsertLazy(), BuildLazy(), ReserveLazy(), and
  * MergeLazyUnfinished() should be used. InsertLazy() only acquires storage
@@ -183,8 +190,9 @@ class HashTable {
       HashTable &table, ScanFunction scan_func);
 
   /**
-   * Build
-   * @param query_state
+   * Construct a HashTable over all overflow partitions in this table.
+   *
+   * @param query_state An opaque state object pointer
    */
   void BuildAllPartitions(void *query_state);
 
@@ -430,7 +438,7 @@ class HashTable {
    * @param[out] value The value associated with the key in the table
    * @return True if a value was found. False otherwise.
    */
-  template <typename Key, typename Value>
+  template <typename Key, typename Value, bool partitioned = false>
   bool TypedProbe(uint64_t hash, const Key &key,
                   const std::function<void(const Value &)> &consumer_func);
 
@@ -515,6 +523,7 @@ class HashTable {
    */
   void TransferMemoryBlocks(HashTable &target);
 
+ public:
   /**
    * Flush and redistribute all data stored in the hash table into the set of
    * overflow partitions. This completely clears the hash table (i.e., the hash
@@ -620,16 +629,19 @@ void HashTable::TypedUpsert(
   update_func(false, reinterpret_cast<Value *>(ret + sizeof(Key)));
 }
 
-template <typename Key, typename Value>
+template <typename Key, typename Value, bool partitioned = false>
 bool HashTable::TypedProbe(
     uint64_t hash, const Key &key,
     const std::function<void(const Value &)> &consumer_func) {
-  // Initial index in the directory
-  uint64_t index = hash & directory_mask_;
+  Entry *entry = nullptr;
 
-  auto *entry = directory_[index];
-  if (entry == nullptr) {
-    return false;
+  if (partitioned) {
+    // Lookup the partition this hash entry falls into
+    uint64_t part_id = hash >> part_shift_bits_;
+    HashTable *part_table = part_tables_[part_id];
+    entry = part_table->directory_[hash & part_table->directory_mask_];
+  } else {
+    entry = directory_[hash & directory_mask_];
   }
 
   bool found = false;
@@ -642,7 +654,7 @@ bool HashTable::TypedProbe(
     entry = entry->next;
   }
 
-  // Not found
+  // Done
   return found;
 }
 

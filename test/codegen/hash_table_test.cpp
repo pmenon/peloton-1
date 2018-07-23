@@ -223,6 +223,113 @@ TEST_F(HashTableTest, LazyInsertsWithDupsTest) {
   }
 }
 
+TEST_F(HashTableTest, BuildAllPartitionsTest) {
+  const auto benchmark = [this](uint64_t num_groups) {
+    ////////////////////////////////////////////////////////
+    /// This test constructs a partitioned hash table, then
+    /// flushes all overflow partitions and builds a set of
+    /// partitioned tables
+    ////////////////////////////////////////////////////////
+    codegen::util::HashTable table(GetMemPool(), sizeof(Key), sizeof(Value));
+
+    const auto count_per_group = 1000u;
+    const auto to_insert = num_groups * count_per_group;
+
+    ////////////////////////////////////////////////////////
+    /// Generate test data
+    ////////////////////////////////////////////////////////
+    std::vector<Key> keys;
+    {
+      for (uint32_t i = 0; i < to_insert; i++) {
+        keys.emplace_back(i % num_groups, i % num_groups);
+      }
+    }
+
+    ////////////////////////////////////////////////////////
+    /// Insert partitioned
+    ////////////////////////////////////////////////////////
+    {
+      const auto upsert = [](bool exists, Value *curr) {
+        if (exists) {
+          curr->v1++;  // update
+        } else {
+          *curr = {1, 2, 3, 4};  // initialize
+        }
+      };
+
+      for (uint32_t i = 0; i < to_insert; i++) {
+        table.TypedUpsert<true, Key, Value>(keys[i].Hash(), keys[i], upsert);
+      }
+    }
+
+    ////////////////////////////////////////////////////////
+    /// Build hash tables over partitions
+    ////////////////////////////////////////////////////////
+    {
+      executor::ExecutorContext tmp(nullptr);
+      tmp.GetThreadStates().Reset(sizeof(codegen::util::HashTable));
+      tmp.GetThreadStates().Allocate(0);
+
+      // This function merges all entries in all partitions in the range
+      // [begin, end) into the target hash table
+      const auto merge_func = [](void *, codegen::util::HashTable &target,
+                                 codegen::util::HashTable::Entry **partitions,
+                                 uint64_t begin, uint64_t end) {
+        for (uint64_t i = begin; i < end; i++) {
+          for (auto *e = partitions[i]; e != nullptr; e = e->next) {
+            // Read key-value from the entry in the partition
+            const Key *k;
+            const Value *v;
+            e->GetKV(k, v);
+
+            // Update in main table
+            const auto upsert = [&v](bool exists, Value *curr) {
+              if (exists) {
+                curr->v1 += v->v1;
+              } else {
+                *curr = *v;
+              }
+            };
+
+            target.TypedUpsert<false, Key, Value>(k->Hash(), *k, upsert);
+          }
+        }
+      };
+
+      table.FlushToOverflowPartitions();
+
+      // Set up the merging function
+      table.TransferPartitions(tmp.GetThreadStates(), 0, merge_func);
+
+      // Perform the build
+      table.BuildAllPartitions(nullptr);
+    }
+
+    ////////////////////////////////////////////////////////
+    /// All probes should succeed
+    ////////////////////////////////////////////////////////
+    {
+      for (const auto &key : keys) {
+        bool dups = false;
+        uint32_t count = 0;
+        bool found = table.TypedProbe<Key, Value, true>(
+            key.Hash(), key, [&dups, &count](const Value &v) {
+              EXPECT_FALSE(dups);
+              count += v.v1;
+              dups = true;
+            });
+        EXPECT_TRUE(found);
+        EXPECT_EQ(count_per_group, count);
+      }
+    }
+  };
+
+  /// Try a bunch of different group sizes
+  for (uint32_t num_groups = 4; num_groups < 1024; num_groups *= 2) {
+    benchmark(num_groups);
+  }
+}
+
 TEST_F(HashTableTest, VectorizedScanTest) {
   ////////////////////////////////////////////////////////////////////
   ///
