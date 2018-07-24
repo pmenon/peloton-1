@@ -37,6 +37,8 @@ void BufferAccessor::Append(CodeGen &codegen, llvm::Value *buffer_ptr,
   auto *size = codegen.Const32(storage_format_.GetStorageSize());
   auto *space = codegen.Call(BufferProxy::Append, {buffer_ptr, size});
 
+  space = storage_format_.CastIfNeeded(codegen, space);
+
   // Now, individually store the attributes of the tuple into the free space
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_format_, space);
   for (uint32_t col_id = 0; col_id < tuple.size(); col_id++) {
@@ -50,16 +52,19 @@ void BufferAccessor::Iterate(CodeGen &codegen, llvm::Value *buffer_ptr,
                              BufferAccessor::IterateCallback &callback) const {
   auto *start = codegen.Load(BufferProxy::buffer_start, buffer_ptr);
   auto *end = codegen.Load(BufferProxy::buffer_pos, buffer_ptr);
-  lang::Loop loop{codegen, codegen->CreateICmpNE(start, end), {{"pos", start}}};
+  lang::Loop loop(codegen, codegen->CreateICmpNE(start, end), {{"pos", start}});
   {
-    auto *pos = loop.GetLoopVar(0);
+    llvm::Value *pos = loop.GetLoopVar(0);
 
-    // Read
+    // The typed pointer to the storage
+    llvm::Value *ptr = storage_format_.CastIfNeeded(codegen, pos);
+
+    // Read attributes
     std::vector<codegen::Value> vals;
-    UpdateableStorage::NullBitmap null_bitmap(codegen, storage_format_, pos);
+    UpdateableStorage::NullBitmap null_bitmap(codegen, storage_format_, ptr);
     for (uint32_t col_id = 0; col_id < storage_format_.GetNumElements();
          col_id++) {
-      auto val = storage_format_.GetValue(codegen, pos, col_id, null_bitmap);
+      auto val = storage_format_.GetValue(codegen, ptr, col_id, null_bitmap);
       vals.emplace_back(val);
     }
 
@@ -67,7 +72,7 @@ void BufferAccessor::Iterate(CodeGen &codegen, llvm::Value *buffer_ptr,
     callback.ProcessEntry(codegen, vals);
 
     // Move along
-    auto *next = codegen->CreateConstInBoundsGEP1_64(
+    llvm::Value *next = codegen->CreateConstInBoundsGEP1_64(
         pos, storage_format_.GetStorageSize());
     loop.LoopEnd(codegen->CreateICmpNE(next, end), {next});
   }

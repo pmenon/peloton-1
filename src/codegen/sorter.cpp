@@ -13,8 +13,8 @@
 #include "codegen/sorter.h"
 
 #include "codegen/lang/loop.h"
-#include "codegen/proxy/sorter_proxy.h"
 #include "codegen/lang/vectorized_loop.h"
+#include "codegen/proxy/sorter_proxy.h"
 #include "codegen/vector.h"
 
 namespace peloton {
@@ -46,7 +46,10 @@ void Sorter::Append(CodeGen &codegen, llvm::Value *sorter_ptr,
                     const std::vector<codegen::Value> &tuple) const {
   // First, call Sorter::StoreInputTuple() to get a handle to a contiguous
   // chunk of free space large enough to materialize a single tuple.
-  auto *space = codegen.Call(SorterProxy::StoreInputTuple, {sorter_ptr});
+  llvm::Value *space = codegen.Call(SorterProxy::StoreInputTuple, {sorter_ptr});
+
+  // Cast to proper type
+  space = storage_format_.CastIfNeeded(codegen, space);
 
   // Now, individually store the attributes of the tuple into the free space
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_format_, space);
@@ -173,16 +176,20 @@ Sorter::SorterAccess::Row &Sorter::SorterAccess::GetRow(llvm::Value *row_idx) {
 codegen::Value Sorter::SorterAccess::LoadRowValue(
     CodeGen &codegen, Sorter::SorterAccess::Row &row,
     uint32_t column_index) const {
-  if (row.row_pos_ == nullptr) {
+  // The storage format
+  const auto &storage_format = sorter_.GetStorageFormat();
+
+  if (row.row_ptr_ == nullptr) {
     auto *addr = codegen->CreateInBoundsGEP(codegen.CharPtrType(), start_pos_,
                                             row.row_idx_);
-    row.row_pos_ = codegen->CreateLoad(addr);
+    row.row_ptr_ = codegen->CreateLoad(addr);
+
+    row.row_ptr_ = storage_format.CastIfNeeded(codegen, row.row_ptr_);
   }
 
-  const auto &storage_format = sorter_.GetStorageFormat();
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_format,
-                                            row.row_pos_);
-  return storage_format.GetValue(codegen, row.row_pos_, column_index,
+                                            row.row_ptr_);
+  return storage_format.GetValue(codegen, row.row_ptr_, column_index,
                                  null_bitmap);
 }
 
@@ -193,7 +200,7 @@ codegen::Value Sorter::SorterAccess::LoadRowValue(
 ////////////////////////////////////////////////////////////////////////////////
 
 Sorter::SorterAccess::Row::Row(SorterAccess &access, llvm::Value *row_index)
-    : access_(access), row_idx_(row_index), row_pos_(nullptr) {}
+    : access_(access), row_idx_(row_index), row_ptr_(nullptr) {}
 
 codegen::Value Sorter::SorterAccess::Row::LoadColumn(CodeGen &codegen,
                                                      uint32_t column_index) {

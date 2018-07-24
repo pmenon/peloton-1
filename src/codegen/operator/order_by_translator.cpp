@@ -232,7 +232,7 @@ void OrderByTranslator::DefineAuxiliaryFunctions() {
   CodeGen &codegen = GetCodeGen();
   const auto &plan = GetPlanAs<planner::OrderByPlan>();
 
-  const auto &storage_format = sorter_.GetStorageFormat();
+  const auto &storage = sorter_.GetStorageFormat();
 
   const auto &sort_keys = plan.GetSortKeys();
   const auto &descend_flags = plan.GetDescendFlags();
@@ -244,12 +244,14 @@ void OrderByTranslator::DefineAuxiliaryFunctions() {
       {"rightTuple", codegen.CharPtrType()}};
   FunctionBuilder compare(codegen.GetCodeContext(), "compare", ret_type, args);
   {
-    llvm::Value *left_tuple = compare.GetArgumentByPosition(0);
-    llvm::Value *right_tuple = compare.GetArgumentByPosition(1);
+    llvm::Value *left_tuple =
+        storage.CastIfNeeded(codegen, compare.GetArgumentByPosition(0));
+    llvm::Value *right_tuple =
+        storage.CastIfNeeded(codegen, compare.GetArgumentByPosition(1));
 
-    UpdateableStorage::NullBitmap left_null_bitmap(codegen, storage_format,
+    UpdateableStorage::NullBitmap left_null_bitmap(codegen, storage,
                                                    left_tuple);
-    UpdateableStorage::NullBitmap right_null_bitmap(codegen, storage_format,
+    UpdateableStorage::NullBitmap right_null_bitmap(codegen, storage,
                                                     right_tuple);
 
     // The result of the overall comparison
@@ -262,9 +264,9 @@ void OrderByTranslator::DefineAuxiliaryFunctions() {
 
       // Read values from storage
       codegen::Value left =
-          storage_format.GetValue(codegen, left_tuple, slot, left_null_bitmap);
-      codegen::Value right = storage_format.GetValue(codegen, right_tuple, slot,
-                                                     right_null_bitmap);
+          storage.GetValue(codegen, left_tuple, slot, left_null_bitmap);
+      codegen::Value right =
+          storage.GetValue(codegen, right_tuple, slot, right_null_bitmap);
 
       // Perform comparison
       codegen::Value cmp;

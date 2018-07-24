@@ -34,7 +34,7 @@ class UpdateableStorage {
    *
    * @param name The (optional) name given to the storage area
    */
-  UpdateableStorage(std::string name = "Buf")
+  explicit UpdateableStorage(std::string name = "Buf")
       : name_(std::move(name)),
         storage_size_(0),
         storage_type_(nullptr),
@@ -107,7 +107,7 @@ class UpdateableStorage {
    * @param space A pointer to the storage space
    * @param index The index of the element to write
    * @param value The value to write
-   * @param null_bitmap The NULL bitmap for the given storage instasnce
+   * @param null_bitmap The NULL bitmap for the given storage instance
    */
   void SetValue(CodeGen &codegen, llvm::Value *space, uint32_t index,
                 const codegen::Value &value, NullBitmap &null_bitmap) const;
@@ -141,6 +141,15 @@ class UpdateableStorage {
     return static_cast<uint32_t>(schema_.size());
   }
 
+  /**
+   * Cast the given pointer to a pointer to this storage type
+   *
+   * @param codegen The codegen instance
+   * @param ptr A generic pointer
+   * @return A pointer to the contained storage type
+   */
+  llvm::Value *CastIfNeeded(CodeGen &codegen, llvm::Value *ptr) const;
+
  public:
   /**
    * Convenience class to handle NULL bitmaps.
@@ -169,6 +178,16 @@ class UpdateableStorage {
     // Write all the dirty byte components
     void WriteBack(CodeGen &codegen);
 
+    static constexpr ALWAYS_INLINE inline uint32_t BytePosition(
+        const uint32_t bit_idx) {
+      return bit_idx / 8u;
+    }
+
+    static constexpr ALWAYS_INLINE inline uint32_t BitPositionInByte(
+        const uint32_t bit_idx) {
+      return bit_idx % 8;
+    }
+
    private:
     // The storage format
     const UpdateableStorage &storage_;
@@ -187,6 +206,8 @@ class UpdateableStorage {
   };
 
  private:
+  bool HasCorrectType(llvm::Value *ptr) const;
+
   // Find the position in the underlying storage where the item with the
   // provided index is.
   void FindStoragePositionFor(uint32_t item_index, int32_t &val_idx,
@@ -213,6 +234,41 @@ class UpdateableStorage {
   // The type of the bitmap
   llvm::Type *null_bitmap_type_;
 };
+
+////////////////////////////////////////////////////////////////////////////////
+///
+/// Implementation below
+///
+////////////////////////////////////////////////////////////////////////////////
+
+inline llvm::Value *UpdateableStorage::CastIfNeeded(CodeGen &codegen,
+                                                    llvm::Value *ptr) const {
+  PELOTON_ASSERT(ptr->getType()->isPointerTy());
+
+  llvm::Type *actual =
+      llvm::cast<llvm::PointerType>(ptr->getType()->getScalarType())
+          ->getElementType();
+
+  // If the type is as expected, we're done
+  if (actual == storage_type_) {
+    return ptr;
+  }
+
+  // Perform the cast now
+  return codegen->CreatePointerCast(ptr, storage_type_->getPointerTo());
+}
+
+inline bool UpdateableStorage::HasCorrectType(llvm::Value *ptr) const {
+  if (!ptr->getType()->isPointerTy()) {
+    return false;
+  }
+
+  llvm::Type *pointee_type =
+      llvm::cast<llvm::PointerType>(ptr->getType()->getScalarType())
+          ->getElementType();
+
+  return pointee_type == storage_type_;
+}
 
 }  // namespace codegen
 }  // namespace peloton

@@ -90,8 +90,8 @@ class Aggregation {
    * @param index The index of the aggregate the caller wishes to advance
    * @param val The value used to advance the aggregate
    */
-  void AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
-                            uint32_t index, const codegen::Value &val) const;
+  void AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs, uint32_t index,
+                            const codegen::Value &val) const;
 
   /**
    * Merge the (partial) aggregates provided in the two arguments and store the
@@ -114,10 +114,10 @@ class Aggregation {
    * storage space, inserting them into the provided output vector.
    *
    * @param codegen The codegen instance
-   * @param space A pointer to where all aggregates are contiguously stored
+   * @param aggs A pointer to where all aggregates are contiguously stored
    * @param[out] final_vals Vector where the final aggregates are stored.
    */
-  void FinalizeValues(CodeGen &codegen, llvm::Value *space,
+  void FinalizeValues(CodeGen &codegen, llvm::Value *aggs,
                       std::vector<codegen::Value> &final_vals) const;
 
   /**
@@ -217,8 +217,7 @@ class Aggregation {
  private:
   /// Common helper function to advance the value of a single aggregate
   void AdvanceValue(CodeGen &codegen, llvm::Value *space,
-                    const AggregateInfo &agg_info,
-                    const codegen::Value &next,
+                    const AggregateInfo &agg_info, const codegen::Value &next,
                     UpdateableStorage::NullBitmap &null_bitmap) const;
 
  private:

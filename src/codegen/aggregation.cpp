@@ -356,6 +356,9 @@ void Aggregation::Setup(
 void Aggregation::CreateInitialGlobalValues(CodeGen &codegen,
                                             llvm::Value *aggs) const {
   PELOTON_ASSERT(is_global_);
+
+  aggs = storage_.CastIfNeeded(codegen, aggs);
+
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
   null_bitmap.InitAllNull(codegen);
   null_bitmap.WriteBack(codegen);
@@ -365,6 +368,8 @@ void Aggregation::CreateInitialValues(
     CodeGen &codegen, llvm::Value *aggs,
     const std::vector<codegen::Value> &initial_vals) const {
   PELOTON_ASSERT(!is_global_);
+
+  aggs = storage_.CastIfNeeded(codegen, aggs);
 
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
@@ -446,6 +451,9 @@ void Aggregation::AdvanceValue(
 void Aggregation::AdvanceValues(
     CodeGen &codegen, llvm::Value *aggs,
     const std::vector<codegen::Value> &next_vals) const {
+  // Ensure we have the correct type
+  aggs = storage_.CastIfNeeded(codegen, aggs);
+
   // The null bitmap tracker
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
@@ -461,8 +469,8 @@ void Aggregation::AdvanceValues(
     }
 
     // Advance the current aggregate
-    AdvanceValue(codegen, aggs, agg_info, next_vals[agg_info.source_idx],
-                 null_bitmap);
+    const auto &next = next_vals[agg_info.source_idx];
+    AdvanceValue(codegen, aggs, agg_info, next, null_bitmap);
   }
 
   // Write the final contents of the null bitmap
@@ -474,6 +482,10 @@ void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
                                        const codegen::Value &val) const {
   PELOTON_ASSERT(index < aggregate_infos_.size());
 
+  // Ensure we have the correct type
+  aggs = storage_.CastIfNeeded(codegen, aggs);
+
+  // The null bitmap tracker
   UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
   for (const auto &agg_info : aggregate_infos_) {
@@ -497,6 +509,11 @@ void Aggregation::AdvanceDistinctValue(CodeGen &codegen, llvm::Value *aggs,
 void Aggregation::MergePartialAggregates(CodeGen &codegen,
                                          llvm::Value *dest_aggs,
                                          llvm::Value *src_aggs) const {
+  // Ensure we have the correct type
+  dest_aggs = storage_.CastIfNeeded(codegen, dest_aggs);
+  src_aggs = storage_.CastIfNeeded(codegen, src_aggs);
+
+  // The null bitmap tracker
   UpdateableStorage::NullBitmap dest_null_bitmap(codegen, storage_, dest_aggs);
   UpdateableStorage::NullBitmap src_null_bitmap(codegen, storage_, src_aggs);
 
@@ -558,11 +575,15 @@ void Aggregation::MergePartialAggregates(CodeGen &codegen,
 }
 
 void Aggregation::FinalizeValues(
-    CodeGen &codegen, llvm::Value *space,
+    CodeGen &codegen, llvm::Value *aggs,
     std::vector<codegen::Value> &final_vals) const {
   std::map<std::pair<uint32_t, ExpressionType>, codegen::Value> all_vals;
 
-  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, space);
+  // Ensure we have the correct type
+  aggs = storage_.CastIfNeeded(codegen, aggs);
+
+  // The null bitmap tracker
+  UpdateableStorage::NullBitmap null_bitmap(codegen, storage_, aggs);
 
   for (const auto &agg_info : aggregate_infos_) {
     codegen::Value final_val;
@@ -573,12 +594,12 @@ void Aggregation::FinalizeValues(
       case ExpressionType::AGGREGATE_COUNT_STAR: {
         // Neither COUNT(...) or COUNT(*) can ever return NULL, so no NULL-check
         final_val =
-            storage_.GetValueSkipNull(codegen, space, agg_info.storage_idx);
+            storage_.GetValueSkipNull(codegen, aggs, agg_info.storage_idx);
         break;
       }
       case ExpressionType::AGGREGATE_SUM: {
-        final_val = storage_.GetValue(codegen, space, agg_info.storage_idx,
-                                      null_bitmap);
+        final_val =
+            storage_.GetValue(codegen, aggs, agg_info.storage_idx, null_bitmap);
         if (agg_info.type != agg_info.output_type) {
           final_val = final_val.CastTo(codegen, agg_info.output_type);
         }
@@ -586,8 +607,8 @@ void Aggregation::FinalizeValues(
       }
       case ExpressionType::AGGREGATE_MIN:
       case ExpressionType::AGGREGATE_MAX: {
-        final_val = storage_.GetValue(codegen, space, agg_info.storage_idx,
-                                      null_bitmap);
+        final_val =
+            storage_.GetValue(codegen, aggs, agg_info.storage_idx, null_bitmap);
         break;
       }
       case ExpressionType::AGGREGATE_AVG: {

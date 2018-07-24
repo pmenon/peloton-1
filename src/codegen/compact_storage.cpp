@@ -15,6 +15,7 @@
 #include <algorithm>
 
 #include "codegen/type/sql_type.h"
+#include "util/math_util.h"
 
 namespace peloton {
 namespace codegen {
@@ -27,16 +28,11 @@ namespace codegen {
 ///
 ////////////////////////////////////////////////////////////////////////////////
 
-/**
- * This is a helper class that incrementally constructs a bitmap. This is used
- * to write the NULL bitmap for the compact storage.
- */
-class CompactStorage::BitmapWriter {
+class CompactStorage::NullBitmap {
  public:
-  /// Constructor
-  BitmapWriter(CodeGen &codegen, const CompactStorage &storage,
-               llvm::Value *storage_ptr)
-      : bitmap_ptr_(nullptr) {
+  NullBitmap(CodeGen &codegen, const CompactStorage &storage,
+             llvm::Value *storage_ptr)
+      : storage_(storage), bitmap_ptr_(nullptr) {
     // Sanity check to make sure the storage pointer we get is correctly typed
     PELOTON_ASSERT(
         llvm::isa<llvm::PointerType>(storage_ptr->getType()) &&
@@ -46,40 +42,84 @@ class CompactStorage::BitmapWriter {
     // Compute a pointer to the bitmap
     auto null_bitmap_pos =
         static_cast<uint32_t>(storage.storage_format_.size());
-    auto *bitmap_arr = codegen->CreateConstInBoundsGEP2_32(
+    llvm::Value *bitmap_arr = codegen->CreateConstInBoundsGEP2_32(
         storage.GetStorageType(), storage_ptr, 0, null_bitmap_pos);
 
     // Index into the first element, treating it as a char *
     bitmap_ptr_ = codegen->CreateConstInBoundsGEP2_32(
         storage.GetNullBitmapType(), bitmap_arr, 0, 0);
 
-    uint32_t num_bytes = (storage.GetNumElements() + 7) >> 3u;
+    auto num_bytes = MathUtil::DivRoundUp(storage.GetNumElements(), 8);
     bytes_.resize(num_bytes, nullptr);
   }
 
-  /**
-   * Set a specific bit in the bitmap to the provided value
-   *
-   * @param codegen The codegen instance
-   * @param bit_idx The index in the bitmap whose value we set
-   * @param bit_val The value of the bit to set
-   */
-  void SetBit(CodeGen &codegen, uint32_t bit_idx, llvm::Value *bit_val) {
-    PELOTON_ASSERT(bit_val->getType() == codegen.BoolType());
-    // Cast to byte, left shift into position
-    auto *byte_val = codegen->CreateZExt(bit_val, codegen.ByteType());
-    byte_val = codegen->CreateShl(byte_val, bit_idx & 7u);
+  bool IsNullable(uint32_t pos) { return storage_.schema_[pos].nullable; }
 
-    // Store in bytes
-    uint32_t byte_pos = bit_idx >> 3u;
-    bytes_[byte_pos] = (bytes_[byte_pos] == nullptr)
-                           ? byte_val
-                           : codegen->CreateOr(bytes_[byte_pos], byte_val);
+  static constexpr ALWAYS_INLINE inline uint32_t BytePosition(
+      const uint32_t bit_idx) {
+    return bit_idx / 8u;
+  }
+
+  static constexpr ALWAYS_INLINE inline uint32_t BitPositionInByte(
+      const uint32_t bit_idx) {
+    return bit_idx % 8;
   }
 
   /**
-   * Write the entire bitmap back to memory. The address of the bitmap was
-   * computed in the constructor.
+   * Set a specific bit in the bitmap
+   *
+   * @param codegen The codegen instance
+   * @param bit_idx The index in the bitmap whose value we set
+   * @param bit The value of the bit to set
+   */
+  void Set(CodeGen &codegen, uint32_t bit_idx, llvm::Value *bit) {
+    // Cast to byte, left shift into position
+    PELOTON_ASSERT(bit->getType() == codegen.BoolType());
+    llvm::Value *byte = codegen->CreateZExt(bit, codegen.ByteType());
+    byte = codegen->CreateShl(byte, BitPositionInByte(bit_idx));
+
+    // Store in bytes
+    uint32_t byte_pos = BytePosition(bit_idx);
+    if (bytes_[byte_pos] == nullptr) {
+      bytes_[byte_pos] = byte;
+    } else {
+      bytes_[byte_pos] = codegen->CreateOr(bytes_[byte_pos], byte);
+    }
+  }
+
+  /**
+   * Read the value of the bit at the given index
+   *
+   * @param codegen The codegen instance
+   * @param bit_idx The index of the bit whose value to read
+   * @return The boolean value of the bit
+   */
+  llvm::Value *Get(CodeGen &codegen, uint32_t bit_idx) {
+    /*
+     * Load the byte containing the bit at the given index from the cache. If
+     * the appropriate byte hasn't been loaded and cached, do it now.
+     */
+
+    uint32_t byte_pos = BytePosition(bit_idx);
+
+    llvm::Value *byte = bytes_[byte_pos];
+
+    if (byte == nullptr) {
+      auto *byte_addr = codegen->CreateConstInBoundsGEP1_32(
+          codegen.ByteType(), bitmap_ptr_, byte_pos);
+      byte = bytes_[byte_pos] = codegen->CreateLoad(byte_addr);
+    }
+
+    // Pull out only the bit we want. We do this by masking the other bits out.
+    auto mask = static_cast<uint8_t>(1u << BitPositionInByte(bit_idx));
+    llvm::Value *masked_byte = codegen->CreateAnd(byte, codegen.Const8(mask));
+
+    // Return if it equals 1
+    return codegen->CreateICmpNE(masked_byte, codegen.Const8(0));
+  }
+
+  /**
+   * Write the entire bitmap back to memory
    *
    * @param codegen The codegen instance.
    */
@@ -96,75 +136,8 @@ class CompactStorage::BitmapWriter {
   }
 
  private:
-  // A pointer to the bitmap
-  llvm::Value *bitmap_ptr_;
+  const CompactStorage &storage_;
 
-  // The bytes that compose the bitmap
-  std::vector<llvm::Value *> bytes_;
-};
-
-////////////////////////////////////////////////////////////////////////////////
-///
-/// Bitmap Reader
-///
-////////////////////////////////////////////////////////////////////////////////
-
-/**
- * This is a helper class used to read and interpret the NULL bitmap associated
- * and stored contiguously with data stored using CompactStorage.
- */
-class CompactStorage::BitmapReader {
- public:
-  /// Constructor
-  BitmapReader(CodeGen &codegen, const CompactStorage &storage,
-               llvm::Value *storage_ptr)
-      : bitmap_ptr_(nullptr) {
-    // Sanity check to make sure the storage pointer we get is correctly typed
-    PELOTON_ASSERT(
-        llvm::isa<llvm::PointerType>(storage_ptr->getType()) &&
-        llvm::cast<llvm::PointerType>(storage_ptr->getType()->getScalarType())
-                ->getElementType() == storage.GetStorageType());
-
-    // Compute a pointer to the bitmap
-    auto null_bitmap_pos =
-        static_cast<uint32_t>(storage.storage_format_.size());
-    auto *bitmap_arr = codegen->CreateConstInBoundsGEP2_32(
-        storage.GetStorageType(), storage_ptr, 0, null_bitmap_pos);
-
-    // Index into the first element, treating it as a char *
-    bitmap_ptr_ = codegen->CreateConstInBoundsGEP2_32(
-        storage.GetNullBitmapType(), bitmap_arr, 0, 0);
-
-    uint32_t num_bytes = (storage.GetNumElements() + 7) >> 3u;
-    bytes_.resize(num_bytes, nullptr);
-  }
-
-  /**
-   * Read the value of the bit at the given index.
-   *
-   * @param codegen The codegen instance
-   * @param bit_idx The index of the bit whose value to read
-   * @return The boolean value of the bit
-   */
-  llvm::Value *GetBit(CodeGen &codegen, uint32_t bit_idx) {
-    uint32_t byte_pos = bit_idx >> 3u;
-
-    if (bytes_[byte_pos] == nullptr) {
-      // Load the byte
-      auto *byte_addr = codegen->CreateConstInBoundsGEP1_32(
-          codegen.ByteType(), bitmap_ptr_, byte_pos);
-      bytes_[byte_pos] = codegen->CreateLoad(byte_addr);
-    }
-
-    // Pull out only the bit we want
-    auto *mask = codegen.Const8(1u << (bit_idx & 7));
-    auto *masked_byte = codegen->CreateAnd(bytes_[byte_pos], mask);
-
-    // Return if it equals 1
-    return codegen->CreateICmpNE(masked_byte, codegen.Const8(0));
-  }
-
- private:
   // A pointer to the bitmap
   llvm::Value *bitmap_ptr_;
 
@@ -207,8 +180,8 @@ llvm::Type *CompactStorage::Setup(CodeGen &codegen,
      */
     storage_format_.emplace_back(
         EntryInfo{.type = val_type,
-                  .physical_index = i,
-                  .logical_index = i,
+                  .storage_index = i,
+                  .external_index = i,
                   .is_length = false,
                   .num_bytes = codegen.SizeOf(val_type)});
 
@@ -216,8 +189,8 @@ llvm::Type *CompactStorage::Setup(CodeGen &codegen,
     if (len_type != nullptr) {
       storage_format_.emplace_back(
           EntryInfo{.type = len_type,
-                    .physical_index = i,
-                    .logical_index = i,
+                    .storage_index = i,
+                    .external_index = i,
                     .is_length = true,
                     .num_bytes = codegen.SizeOf(len_type)});
     }
@@ -237,10 +210,10 @@ llvm::Type *CompactStorage::Setup(CodeGen &codegen,
 
   for (uint32_t idx = 0; idx < storage_format_.size(); idx++) {
     llvm_types.push_back(storage_format_[idx].type);
-    storage_format_[idx].physical_index = idx;
+    storage_format_[idx].storage_index = idx;
   }
 
-  auto num_null_bytes = static_cast<uint32_t>((schema_.size() + 7) >> 3u);
+  auto num_null_bytes = MathUtil::DivRoundUp(schema_.size(), 8);
   null_bitmap_type_ = codegen.ArrayType(codegen.ByteType(), num_null_bytes);
   llvm_types.push_back(null_bitmap_type_);
 
@@ -271,26 +244,26 @@ llvm::Value *CompactStorage::StoreValues(
 
   // Cast the area pointer to our constructed type
   auto *typed_ptr =
-      codegen->CreateBitCast(area_start, storage_type_->getPointerTo());
+      codegen->CreatePointerCast(area_start, storage_type_->getPointerTo());
 
   // The NULL bitmap
-  BitmapWriter null_bitmap(codegen, *this, typed_ptr);
+  NullBitmap null_bitmap(codegen, *this, typed_ptr);
 
   // Fill in the actual values
   for (const auto &entry_info : storage_format_) {
     // Load the address where this entry's data is in the storage space
     llvm::Value *addr = codegen->CreateConstInBoundsGEP2_32(
-        storage_type_, typed_ptr, 0, entry_info.physical_index);
+        storage_type_, typed_ptr, 0, entry_info.storage_index);
 
     // Load it
     if (entry_info.is_length) {
-      codegen->CreateStore(lengths[entry_info.logical_index], addr);
+      codegen->CreateStore(lengths[entry_info.external_index], addr);
     } else {
-      codegen->CreateStore(vals[entry_info.logical_index], addr);
+      codegen->CreateStore(vals[entry_info.external_index], addr);
 
       // Update the bitmap
-      null_bitmap.SetBit(codegen, entry_info.logical_index,
-                         nulls[entry_info.logical_index]);
+      null_bitmap.Set(codegen, entry_info.external_index,
+                      nulls[entry_info.external_index]);
     }
   }
 
@@ -312,10 +285,10 @@ llvm::Value *CompactStorage::LoadValues(
   std::vector<llvm::Value *> nulls(num_elems);
 
   auto *typed_ptr =
-      codegen->CreateBitCast(area_start, storage_type_->getPointerTo());
+      codegen->CreatePointerCast(area_start, storage_type_->getPointerTo());
 
   // The NULL bitmap
-  BitmapReader null_bitmap(codegen, *this, typed_ptr);
+  NullBitmap null_bitmap(codegen, *this, typed_ptr);
 
   /*
    * Collect all the values in the provided storage space, separating the values
@@ -324,18 +297,18 @@ llvm::Value *CompactStorage::LoadValues(
   for (const auto &entry_info : storage_format_) {
     // Load the raw value
     llvm::Value *entry_addr = codegen->CreateConstInBoundsGEP2_32(
-        storage_type_, typed_ptr, 0, entry_info.physical_index);
+        storage_type_, typed_ptr, 0, entry_info.storage_index);
     llvm::Value *entry = codegen->CreateLoad(entry_addr);
 
     // Set the length or value component
     if (entry_info.is_length) {
-      lengths[entry_info.logical_index] = entry;
+      lengths[entry_info.external_index] = entry;
     } else {
-      vals[entry_info.logical_index] = entry;
+      vals[entry_info.external_index] = entry;
 
       // Load the null-bit too
-      nulls[entry_info.logical_index] =
-          null_bitmap.GetBit(codegen, entry_info.logical_index);
+      nulls[entry_info.external_index] =
+          null_bitmap.Get(codegen, entry_info.external_index);
     }
   }
 

@@ -108,7 +108,7 @@ class Sorter {
       // The sorter accessor and the index of the row in the sorter instance
       SorterAccess &access_;
       llvm::Value *row_idx_;
-      llvm::Value *row_pos_;
+      llvm::Value *row_ptr_;
     };
 
     // Constructor

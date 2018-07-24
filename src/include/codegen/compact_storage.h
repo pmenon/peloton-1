@@ -15,8 +15,8 @@
 #include <vector>
 
 #include "codegen/codegen.h"
-#include "codegen/value.h"
 #include "codegen/type/type.h"
+#include "codegen/value.h"
 
 namespace peloton {
 namespace codegen {
@@ -81,6 +81,11 @@ class CompactStorage {
    */
   uint32_t MaxStorageSize() const { return storage_size_; }
 
+ private:
+  friend class UpdateableStorage;
+
+  class NullBitmap;
+
   /**
    * Return the number of elements configured in this storage format
    *
@@ -89,11 +94,6 @@ class CompactStorage {
   uint32_t GetNumElements() const {
     return static_cast<uint32_t>(schema_.size());
   }
-
- private:
-  friend class UpdateableStorage;
-  class BitmapReader;
-  class BitmapWriter;
 
   /**
    * Return the constructed LLVM structure type for this storage format
@@ -117,16 +117,16 @@ class CompactStorage {
     llvm::Type *type;
 
     // The index in the underlying storage where this entry is stored.
-    uint32_t physical_index;
+    uint32_t storage_index;
 
     // The index in the externally visible schema this element belongs to. Or,
     // the index where the user expects to find this element.
-    uint32_t logical_index;
+    uint32_t external_index;
 
     // Indicates whether this is the length component of a variable length entry
     bool is_length;
 
-    // The size (in bytes_ this entry occupies
+    // The size (in bytes) this entry occupies
     uint64_t num_bytes;
   };
 
@@ -137,7 +137,7 @@ class CompactStorage {
   // The schema of the storage
   std::vector<EntryInfo> storage_format_;
 
-  // The constructed finalized type
+  // The physical storage type
   llvm::Type *storage_type_;
 
   // The size of the constructed finalized type
