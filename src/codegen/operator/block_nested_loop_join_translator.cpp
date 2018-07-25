@@ -131,83 +131,85 @@ void BlockNestedLoopJoinTranslator::TearDownQueryState() {
 }
 
 void BlockNestedLoopJoinTranslator::Produce() const {
-  // Let the left child produce tuples we'll batch-process in Consume()
+  /*
+   * Let the left child produce tuples we'll batch-process in Consume()
+   */
+
   GetCompilationContext().Produce(*GetPlan().GetChild(0));
 
-  // Flush any remaining buffered tuples through the join
+  /*
+   * All tuples have been processed except, potentially, any tuples still in
+   * the buffer. Flush them now.
+   */
+
   CodeGen &codegen = GetCodeGen();
-  auto *num_tuples = buffer_.NumTuples(codegen, LoadStatePtr(buffer_id_));
-  auto *flush_buffer = codegen->CreateICmpNE(num_tuples, codegen.Const32(0));
-  lang::If has_tuples(codegen, flush_buffer);
+
+  llvm::Value *buffer_ptr = LoadStatePtr(buffer_id_);
+
+  lang::If unflushed_tuples(codegen, IsBufferNonEmpty(codegen, buffer_ptr));
   {
     // Flush remaining
     join_buffer_func_.Call(codegen);
   }
-  has_tuples.EndIf();
+  unflushed_tuples.EndIf();
 }
 
-bool BlockNestedLoopJoinTranslator::IsFromLeftChild(
-    const Pipeline &pipeline) const {
-  return pipeline == left_pipeline_;
-}
-
-void BlockNestedLoopJoinTranslator::ConsumeFromLeft(
+void BlockNestedLoopJoinTranslator::ConsumeLeft(
     UNUSED_ATTRIBUTE ConsumerContext &context, RowBatch::Row &row) const {
   CodeGen &codegen = GetCodeGen();
 
-  // Construct tuple
+  /*
+   * Construct tuple
+   */
+
   std::vector<Value> tuple;
   for (const auto &left_ai : unique_left_attributes_) {
     tuple.push_back(row.DeriveValue(codegen, left_ai));
   }
 
-  // Append tuple to buffer
+  /*
+   * Append tuple to buffer
+   */
+
   auto *buffer_ptr = LoadStatePtr(buffer_id_);
   buffer_.Append(codegen, buffer_ptr, tuple);
 
-  // Check if we should process the filled buffer
-  auto *buf_size = buffer_.NumTuples(codegen, buffer_ptr);
-  auto *flush_buffer_cond =
-      codegen->CreateICmpUGE(buf_size, codegen.Const32(max_buf_rows_));
-  lang::If flush_buffer(codegen, flush_buffer_cond);
+  /*
+   * If buffer is full, process the filler buffer through the join
+   */
+
+  lang::If flush_buffer(codegen, IsBufferFull(codegen, buffer_ptr));
   {
-    // Process and reset buffer
+    // Process tuples
     join_buffer_func_.Call(codegen);
+    // Reset buffer for new tuples
     buffer_.Reset(codegen, buffer_ptr);
   }
   flush_buffer.EndIf();
-}
-
-void BlockNestedLoopJoinTranslator::ConsumeFromRight(ConsumerContext &context,
-                                                     RowBatch::Row &row) const {
-  // At this point, we've buffered tuples from the left input side and are
-  // receiving a new input tuple from the right side. Let's find all join
-  // partners with the new input tuple.
-  FindMatchesForRow(context, row);
-}
-
-void BlockNestedLoopJoinTranslator::Consume(ConsumerContext &ctx,
-                                            RowBatch::Row &row) const {
-  if (IsFromLeftChild(ctx.GetPipeline())) {
-    ConsumeFromLeft(ctx, row);
-  } else {
-    ConsumeFromRight(ctx, row);
-  }
 }
 
 namespace {
 
 // This is the callback called for every tuple in the buffer. There's a bit of
 // ceremony, but it's just a callback function.
-class BufferedTupleCallback : public BufferAccessor::IterateCallback {
+class IterateBuffer : public BufferAccessor::IterateCallback {
  public:
   // Constructor
-  BufferedTupleCallback(
+  IterateBuffer(
       const planner::NestedLoopJoinPlan &plan,
       const std::vector<const planner::AttributeInfo *> &left_attributes,
-      ConsumerContext &ctx, RowBatch::Row &right_row);
+      ConsumerContext &ctx, RowBatch::Row &right_row)
+      : plan_(plan),
+        left_attributes_(left_attributes),
+        ctx_(ctx),
+        right_row_(right_row) {}
 
-  // The callback invoked for each tuple in the sorter/buffer
+  /**
+   * The callback for each tuple in the buffer
+   *
+   * @param codegen The codegen instance
+   * @param left_row A row in the buffer
+   */
   void ProcessEntry(CodeGen &codegen,
                     const std::vector<codegen::Value> &left_row) const override;
 
@@ -224,26 +226,22 @@ class BufferedTupleCallback : public BufferAccessor::IterateCallback {
   RowBatch::Row &right_row_;
 };
 
-BufferedTupleCallback::BufferedTupleCallback(
-    const planner::NestedLoopJoinPlan &plan,
-    const std::vector<const planner::AttributeInfo *> &left_attributes,
-    ConsumerContext &ctx, RowBatch::Row &right_row)
-    : plan_(plan),
-      left_attributes_(left_attributes),
-      ctx_(ctx),
-      right_row_(right_row) {}
-
-// This function is called for each tuple in the BNLJ buffer.
-void BufferedTupleCallback::ProcessEntry(
+void IterateBuffer::ProcessEntry(
     CodeGen &codegen, const std::vector<codegen::Value> &left_row) const {
   PELOTON_ASSERT(left_row.size() == left_attributes_.size());
 
-  // Add all the attributes from left tuple (from the sorter) into the row
-  // coming from the right input side. We need to do this in order to evaluate
-  // the predicate.
+  /*
+   * Add all the attributes from left tuple into the row coming from the right
+   * input side. We need to do this in order to evaluate the predicate.
+   */
+
   for (size_t i = 0; i < left_attributes_.size(); i++) {
     right_row_.RegisterAttributeValue(left_attributes_[i], left_row[i]);
   }
+
+  /*
+   * If there is a join predicate, evaluate it and pass along.
+   */
 
   auto *predicate = plan_.GetPredicate();
   if (predicate == nullptr) {
@@ -261,7 +259,7 @@ void BufferedTupleCallback::ProcessEntry(
   }
 }
 
-void BufferedTupleCallback::ProjectAndConsume() const {
+void IterateBuffer::ProjectAndConsume() const {
   const auto *projection_info = plan_.GetProjInfo();
   std::vector<RowBatch::ExpressionAccess> derived_attribute_access;
   if (projection_info != nullptr) {
@@ -275,11 +273,40 @@ void BufferedTupleCallback::ProjectAndConsume() const {
 
 }  // anonymous namespace
 
-void BlockNestedLoopJoinTranslator::FindMatchesForRow(
-    ConsumerContext &ctx, RowBatch::Row &row) const {
+void BlockNestedLoopJoinTranslator::ConsumeRight(ConsumerContext &context,
+                                                 RowBatch::Row &row) const {
+  /*
+   * The buffer (stored in query state) is full of unprocessed tuples from the
+   * left side. We've just received one tuple from the right side. We now
+   * perform the loop over the buffer to find all join partners for the
+   * incoming right tuple.
+   */
+
   const auto &plan = GetPlanAs<planner::NestedLoopJoinPlan>();
-  BufferedTupleCallback callback{plan, unique_left_attributes_, ctx, row};
+
+  IterateBuffer callback(plan, unique_left_attributes_, context, row);
   buffer_.Iterate(GetCodeGen(), LoadStatePtr(buffer_id_), callback);
+}
+
+void BlockNestedLoopJoinTranslator::Consume(ConsumerContext &ctx,
+                                            RowBatch::Row &row) const {
+  if (IsFromLeftChild(ctx.GetPipeline())) {
+    ConsumeLeft(ctx, row);
+  } else {
+    ConsumeRight(ctx, row);
+  }
+}
+
+llvm::Value *BlockNestedLoopJoinTranslator::IsBufferFull(
+    CodeGen &codegen, llvm::Value *buffer_ptr) const {
+  auto *buf_size = buffer_.NumTuples(codegen, buffer_ptr);
+  return codegen->CreateICmpUGE(buf_size, codegen.Const32(max_buf_rows_));
+}
+
+llvm::Value *BlockNestedLoopJoinTranslator::IsBufferNonEmpty(
+    CodeGen &codegen, llvm::Value *buffer_ptr) const {
+  llvm::Value *num_tuples = buffer_.NumTuples(codegen, buffer_ptr);
+  return codegen->CreateICmpNE(num_tuples, codegen.Const32(0));
 }
 
 }  // namespace codegen

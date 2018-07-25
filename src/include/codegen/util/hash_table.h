@@ -438,7 +438,7 @@ class HashTable {
    * @param[out] value The value associated with the key in the table
    * @return True if a value was found. False otherwise.
    */
-  template <typename Key, typename Value, bool partitioned = false>
+  template <typename Key, typename Value, bool Partitioned = false>
   bool TypedProbe(uint64_t hash, const Key &key,
                   const std::function<void(const Value &)> &consumer_func);
 
@@ -629,13 +629,13 @@ void HashTable::TypedUpsert(
   update_func(false, reinterpret_cast<Value *>(ret + sizeof(Key)));
 }
 
-template <typename Key, typename Value, bool partitioned = false>
+template <typename Key, typename Value, bool Partitioned>
 bool HashTable::TypedProbe(
     uint64_t hash, const Key &key,
     const std::function<void(const Value &)> &consumer_func) {
   Entry *entry = nullptr;
 
-  if (partitioned) {
+  if (Partitioned) {
     // Lookup the partition this hash entry falls into
     uint64_t part_id = hash >> part_shift_bits_;
     HashTable *part_table = part_tables_[part_id];

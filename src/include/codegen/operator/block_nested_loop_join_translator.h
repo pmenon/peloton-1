@@ -46,12 +46,16 @@ class BlockNestedLoopJoinTranslator : public OperatorTranslator {
   void Consume(ConsumerContext &context, RowBatch::Row &row) const override;
 
  private:
-  bool IsFromLeftChild(const Pipeline &pipeline) const;
+  bool IsFromLeftChild(const Pipeline &pipeline) const {
+    return pipeline == left_pipeline_;
+  }
 
-  void ConsumeFromLeft(ConsumerContext &context, RowBatch::Row &row) const;
-  void ConsumeFromRight(ConsumerContext &context, RowBatch::Row &row) const;
+  void ConsumeLeft(ConsumerContext &context, RowBatch::Row &row) const;
+  void ConsumeRight(ConsumerContext &context, RowBatch::Row &row) const;
 
-  void FindMatchesForRow(ConsumerContext &ctx, RowBatch::Row &row) const;
+  llvm::Value *IsBufferFull(CodeGen &codegen, llvm::Value *buffer_ptr) const;
+  llvm::Value *IsBufferNonEmpty(CodeGen &codegen,
+                                llvm::Value *buffer_ptr) const;
 
  private:
   // The pipeline for the left subtree of the plan
